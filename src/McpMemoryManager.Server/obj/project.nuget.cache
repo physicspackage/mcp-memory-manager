@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "fIs1VVC3vZ8=",
+  "dgSpecHash": "4Ik1Q6p9ujI=",
   "success": true,
-  "projectFilePath": "C:\\Users\\baryn\\source\\repos\\mcp-memory-manager\\McpMemoryManager.Server\\McpMemoryManager.Server.csproj",
+  "projectFilePath": "C:\\Users\\baryn\\source\\repos\\mcp-memory-manager\\src\\McpMemoryManager.Server\\McpMemoryManager.Server.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\baryn\\.nuget\\packages\\dapper\\2.1.66\\dapper.2.1.66.nupkg.sha512",
     "C:\\Users\\baryn\\.nuget\\packages\\microsoft.data.sqlite\\9.0.8\\microsoft.data.sqlite.9.0.8.nupkg.sha512",

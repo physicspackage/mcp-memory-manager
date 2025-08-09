@@ -1,0 +1,12 @@
+﻿bin/
+obj/
+.vs/
+*.user
+*.suo
+*.cache
+*.ncrunch*
+launchSettings.json
+*.sqlite
+*.db
+*.db-shm
+*.db-wal
