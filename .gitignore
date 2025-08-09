@@ -1,12 +1,41 @@
-﻿bin/
+﻿# Build output
+bin/
 obj/
-.vs/
-*.user
-*.suo
-*.cache
-*.ncrunch*
-launchSettings.json
-*.sqlite
+out/
+*.exe
+*.dll
+*.pdb
 *.db
+*.sqlite
 *.db-shm
 *.db-wal
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.ncrunch*
+*.vs/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Rider / JetBrains
+.idea/
+
+# Launch settings
+launchSettings.json
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/

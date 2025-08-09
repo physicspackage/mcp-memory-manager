@@ -52,23 +52,15 @@
           "dependencies": {
             "Dapper": {
               "target": "Package",
-              "version": "[2.1.66, )"
+              "version": "[2.1.35, )"
             },
             "Microsoft.Data.Sqlite": {
               "target": "Package",
-              "version": "[9.0.8, )"
-            },
-            "ModelContextProtocol": {
-              "target": "Package",
-              "version": "[0.3.0-preview.3, )"
+              "version": "[8.0.7, )"
             },
             "SQLitePCLRaw.bundle_e_sqlite3": {
               "target": "Package",
-              "version": "[3.0.1, )"
-            },
-            "System.Text.Json": {
-              "target": "Package",
-              "version": "[9.0.8, )"
+              "version": "[2.1.10, )"
             }
           },
           "imports": [
