@@ -39,10 +39,11 @@ CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-  UPDATE memories_fts
-     SET content = NEW.content,
-         tags = NEW.tags
-   WHERE rowid = (SELECT fts_rowid FROM memories_fts_map WHERE mem_id = NEW.id);
+  -- For contentless FTS5, emulate update with delete + insert
+  INSERT INTO memories_fts(memories_fts, rowid)
+  VALUES('delete', (SELECT fts_rowid FROM memories_fts_map WHERE mem_id = NEW.id));
+  INSERT INTO memories_fts(rowid, content, tags)
+  VALUES((SELECT fts_rowid FROM memories_fts_map WHERE mem_id = NEW.id), NEW.content, NEW.tags);
 END;
 
 CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN

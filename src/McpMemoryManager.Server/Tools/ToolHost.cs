@@ -95,9 +95,52 @@ public static class ToolHost
             inputSchema = new { type = "object", properties = new { id = new { type = "string", description = "Memory id" } }, required = new [] { "id" } }
         },
         new {
+            name = "memory.update",
+            description = "Update fields of a memory (partial)",
+            inputSchema = new {
+                type = "object",
+                required = new [] { "id" },
+                properties = new {
+                    id = new { type = "string" },
+                    content = new { type = "string", @nullable = true },
+                    title = new { type = "string", @nullable = true },
+                    metadata = new { type = "object", additionalProperties = true, @nullable = true },
+                    tags = new { type = "array", items = new { type = "string" }, @nullable = true },
+                    refs = new { type = "array", items = new { type = "string" }, @nullable = true },
+                    importance = new { type = "number", @nullable = true },
+                    pin = new { type = "boolean", @nullable = true },
+                    archived = new { type = "boolean", @nullable = true },
+                    expiresAt = new { type = "string", @nullable = true }
+                }
+            }
+        },
+        new {
+            name = "memory.delete",
+            description = "Delete a memory (soft by default)",
+            inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" }, hard = new { type = "boolean", @default = false } } }
+        },
+        new { name = "memory.archive", description = "Archive a memory", inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" } } } },
+        new { name = "memory.unarchive", description = "Unarchive a memory", inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" } } } },
+        new { name = "memory.pin", description = "Pin a memory", inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" } } } },
+        new { name = "memory.unpin", description = "Unpin a memory", inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" } } } },
+        new {
             name = "memory.list",
             description = "List recent memories",
-            inputSchema = new { type = "object", properties = new { ns = new { type = "string", description = "Namespace filter", @nullable = true }, type = new { type = "string", description = "Type filter", @nullable = true }, limit = new { type = "integer", description = "Max items", @default = 50 } } }
+            inputSchema = new {
+                type = "object",
+                properties = new {
+                    agentId = new { type = "string", @nullable = true },
+                    ns = new { type = "string", @nullable = true },
+                    types = new { type = "array", items = new { type = "string" }, @nullable = true },
+                    tags = new { type = "array", items = new { type = "string" }, @nullable = true },
+                    pinned = new { type = "boolean", @nullable = true },
+                    archived = new { type = "boolean", @nullable = true },
+                    before = new { type = "string", @nullable = true },
+                    after = new { type = "string", @nullable = true },
+                    limit = new { type = "integer", @default = 50 },
+                    cursor = new { type = "string", @nullable = true }
+                }
+            }
         },
         new {
             name = "memory.search",
@@ -116,6 +159,8 @@ public static class ToolHost
             inputSchema = new { type = "object", properties = new { title = new { type = "string", description = "Task title" }, ns = new { type = "string", description = "Namespace", @default = "default" } }, required = new [] { "title" } },
             examples = new [] { new { arguments = new { title = "Write tests", ns = "proj" } } }
         },
+        new { name = "task.update_status", description = "Update task status", inputSchema = new { type = "object", required = new [] { "id", "status" }, properties = new { id = new { type = "string" }, status = new { type = "string" }, note = new { type = "string", @nullable = true } } } },
+        new { name = "task.add_note", description = "Attach a note to a task", inputSchema = new { type = "object", required = new [] { "id", "note" }, properties = new { id = new { type = "string" }, note = new { type = "string" } } } },
         new {
             name = "task.list",
             description = "List tasks",
@@ -149,12 +194,48 @@ public static class ToolHost
                 return new { item = m };
             }
 
-            case "memory.list":
-                return new { items = await memory.ListAsync(
-                    ns: GetString(args, "ns"),
-                    type: GetString(args, "type"),
-                    limit: GetInt(args, "limit") ?? 50
+            case "memory.update":
+                return new { ok = await memory.UpdateAsync(
+                    id: GetString(args, "id")!,
+                    content: GetString(args, "content"),
+                    title: GetString(args, "title"),
+                    metadata: GetDict(args, "metadata"),
+                    tags: GetStringArray(args, "tags"),
+                    refs: GetStringArray(args, "refs"),
+                    importance: GetDouble(args, "importance"),
+                    pin: GetBool(args, "pin"),
+                    archived: GetBool(args, "archived"),
+                    expiresAt: GetDateTimeOffset(args, "expiresAt")
                 ) };
+
+            case "memory.delete":
+                return new { removed = await memory.DeleteAsync(GetString(args, "id")!, GetBool(args, "hard") ?? false) };
+
+            case "memory.archive":
+                return new { ok = await memory.UpdateAsync(GetString(args, "id")!, archived: true) };
+            case "memory.unarchive":
+                return new { ok = await memory.UpdateAsync(GetString(args, "id")!, archived: false) };
+            case "memory.pin":
+                return new { ok = await memory.UpdateAsync(GetString(args, "id")!, pin: true) };
+            case "memory.unpin":
+                return new { ok = await memory.UpdateAsync(GetString(args, "id")!, pin: false) };
+
+            case "memory.list":
+            {
+                var (items, next) = await memory.ListAdvancedAsync(
+                    agentId: GetString(args, "agentId"),
+                    ns: GetString(args, "ns"),
+                    types: GetStringArray(args, "types"),
+                    tags: GetStringArray(args, "tags"),
+                    pinned: GetBool(args, "pinned"),
+                    archived: GetBool(args, "archived"),
+                    before: GetDateTimeOffset(args, "before"),
+                    after: GetDateTimeOffset(args, "after"),
+                    limit: GetInt(args, "limit") ?? 50,
+                    cursor: GetString(args, "cursor")
+                );
+                return new { items, nextCursor = next };
+            }
 
             case "memory.search":
                 return new { items = await memory.SearchAsync(
@@ -174,6 +255,11 @@ public static class ToolHost
 
             case "task.list":
                 return new { items = await tasks.ListTasksAsync(GetInt(args, "limit") ?? 50) };
+
+            case "task.update_status":
+                return new { ok = await tasks.UpdateStatusAsync(GetString(args, "id")!, GetString(args, "status")!, GetString(args, "note")) };
+            case "task.add_note":
+                return new { id = await tasks.AddNoteAsync(GetString(args, "id")!, GetString(args, "note")!) };
 
             default:
                 throw new InvalidOperationException($"Unknown tool: {name}");
