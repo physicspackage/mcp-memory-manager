@@ -46,6 +46,8 @@ CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-  DELETE FROM memories_fts WHERE rowid = (SELECT fts_rowid FROM memories_fts_map WHERE mem_id = OLD.id);
+  -- For contentless FTS5, use the special 'delete' command
+  INSERT INTO memories_fts(memories_fts, rowid)
+  VALUES('delete', (SELECT fts_rowid FROM memories_fts_map WHERE mem_id = OLD.id));
   DELETE FROM memories_fts_map WHERE mem_id = OLD.id;
 END;
