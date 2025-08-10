@@ -1,4 +1,11 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Text;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Hosting;
 using System.Text.Json;
 using McpMemoryManager.Server.Models;
 
@@ -8,6 +15,166 @@ public static class ToolHost
 {
     public static Task RunAsync(MemoryApi memory, TaskApi tasks)
         => RunAsync(memory, tasks, Console.OpenStandardInput(), Console.OpenStandardOutput(), CancellationToken.None);
+
+    public static async Task RunTcpAsync(MemoryApi memory, TaskApi tasks, string endpoint, CancellationToken cancel = default)
+    {
+        string host = "127.0.0.1";
+        int port;
+        var parts = endpoint.Split(':', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 1)
+        {
+            if (!int.TryParse(parts[0], out port)) throw new ArgumentException("--tcp expects PORT or HOST:PORT");
+        }
+        else if (parts.Length == 2)
+        {
+            host = parts[0];
+            if (!int.TryParse(parts[1], out port)) throw new ArgumentException("Invalid port in --tcp");
+        }
+        else throw new ArgumentException("--tcp expects PORT or HOST:PORT");
+
+        var ip = host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ? IPAddress.Loopback : IPAddress.Parse(host);
+        var listener = new TcpListener(ip, port);
+        listener.Start();
+        await Console.Error.WriteLineAsync($"[MCP] TCP listening on {ip}:{port}");
+
+        try
+        {
+            while (!cancel.IsCancellationRequested)
+            {
+                var client = await listener.AcceptTcpClientAsync();
+                _ = Task.Run(async () =>
+                {
+                    using var c = client;
+                    using var s = c.GetStream();
+                    try { await RunAsync(memory, tasks, s, s, cancel); }
+                    catch { /* ignore per-connection errors */ }
+                });
+            }
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    public static async Task RunWebSocketAsync(MemoryApi memory, TaskApi tasks, string endpoint, CancellationToken cancel = default)
+    {
+        string url = endpoint.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? endpoint : $"http://{endpoint}";
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = Array.Empty<string>(), ApplicationName = typeof(ToolHost).Assembly.FullName, ContentRootPath = AppContext.BaseDirectory, WebRootPath = AppContext.BaseDirectory, EnvironmentName = Environments.Production, }
+        );
+        builder.WebHost.UseUrls(url);
+        var app = builder.Build();
+        app.UseWebSockets();
+
+        app.Map("/ws", async context =>
+        {
+            if (!context.WebSockets.IsWebSocketRequest)
+            {
+                context.Response.StatusCode = 400;
+                await context.Response.WriteAsync("Expected WebSocket request");
+                return;
+            }
+            using var ws = await context.WebSockets.AcceptWebSocketAsync();
+            var buffer = new byte[64 * 1024];
+            while (!cancel.IsCancellationRequested && ws.State == WebSocketState.Open)
+            {
+                var receive = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cancel);
+                if (receive.MessageType == WebSocketMessageType.Close) break;
+                int count = receive.Count;
+                while (!receive.EndOfMessage)
+                {
+                    if (count >= buffer.Length)
+                    {
+                        context.Abort();
+                        return;
+                    }
+                    receive = await ws.ReceiveAsync(new ArraySegment<byte>(buffer, count, buffer.Length - count), cancel);
+                    count += receive.Count;
+                }
+                var json = Encoding.UTF8.GetString(buffer, 0, count);
+                try
+                {
+                    using var doc = JsonDocument.Parse(json);
+                    var root = doc.RootElement;
+                    var hasId = root.TryGetProperty("id", out var idEl);
+                    var id = hasId ? idEl.Clone() : default;
+                    var method = root.GetProperty("method").GetString();
+
+                    object payload;
+                    switch (method)
+                    {
+                        case "initialize":
+                            payload = new { jsonrpc = "2.0", id, result = new { protocolVersion = "2024-11-05", server = new { name = "mcp-memory-manager", version = "0.1.0" }, capabilities = new { tools = new { } } } };
+                            break;
+                        case "tools/list":
+                            var tools = GetTools();
+                            payload = new { jsonrpc = "2.0", id, result = new { tools } };
+                            break;
+                        case "resources/list":
+                        {
+                            var p = root.TryGetProperty("params", out var p2) ? p2 : default;
+                            var (items, next) = await memory.ListAdvancedAsync(
+                                ns: GetString(p, "ns"),
+                                types: GetStringArray(p, "types"),
+                                tags: GetStringArray(p, "tags"),
+                                pinned: GetBool(p, "pinned"),
+                                archived: GetBool(p, "archived"),
+                                before: GetDateTimeOffset(p, "before"),
+                                after: GetDateTimeOffset(p, "after"),
+                                limit: GetInt(p, "limit") ?? 50,
+                                cursor: GetString(p, "cursor")
+                            );
+                            var resources = items.Select(i => new { uri = $"mem://{i.Namespace}/{i.Id}", name = i.Title ?? (i.Content.Length > 30 ? i.Content[..30] + "…" : i.Content), description = i.Type, mimeType = "text/plain" }).ToArray();
+                            payload = new { jsonrpc = "2.0", id, result = new { resources, nextCursor = next } };
+                            break;
+                        }
+                        case "resources/read":
+                        {
+                            var p = root.GetProperty("params");
+                            var uri = p.GetProperty("uri").GetString()!;
+                            var format = GetString(p, "format") ?? "text";
+                            if (!uri.StartsWith("mem://")) { payload = new { jsonrpc = "2.0", id, error = new { code = -32602, message = "Unsupported URI" } }; break; }
+                            var path = uri.Substring("mem://".Length);
+                            var idx = path.IndexOf('/');
+                            if (idx <= 0) { payload = new { jsonrpc = "2.0", id, error = new { code = -32602, message = "Invalid URI" } }; break; }
+                            var ns = path.Substring(0, idx);
+                            var idPart = path.Substring(idx + 1);
+                            var item = await memory.GetAsync(idPart);
+                            if (item is null || item.Namespace != ns) { payload = new { jsonrpc = "2.0", id, error = new { code = -32004, message = "Not found" } }; break; }
+                            object contentObj = format.Equals("json", StringComparison.OrdinalIgnoreCase) ? new { uri, mimeType = "application/json", text = JsonSerializer.Serialize(item) } : new { uri, mimeType = "text/plain", text = item.Content };
+                            payload = new { jsonrpc = "2.0", id, result = new { contents = new[] { contentObj } } };
+                            break;
+                        }
+                        case "tools/call":
+                        {
+                            var p = root.GetProperty("params");
+                            var name = p.GetProperty("name").GetString()!;
+                            var a = p.TryGetProperty("arguments", out var a2) ? a2 : default;
+                            var result = await CallToolAsync(name, a, memory, tasks);
+                            payload = new { jsonrpc = "2.0", id, result = new { content = result } };
+                            break;
+                        }
+                        default:
+                            payload = new { jsonrpc = "2.0", id, error = new { code = -32601, message = $"Method not found: {method}" } };
+                            break;
+                    }
+
+                    var outJson = JsonSerializer.Serialize(payload);
+                    var outBytes = Encoding.UTF8.GetBytes(outJson);
+                    await ws.SendAsync(new ArraySegment<byte>(outBytes), WebSocketMessageType.Text, true, cancel);
+                }
+                catch (Exception ex)
+                {
+                    var err = JsonSerializer.Serialize(new { jsonrpc = "2.0", id = (JsonElement?)null, error = new { code = -32603, message = ex.Message } });
+                    var outBytes = Encoding.UTF8.GetBytes(err);
+                    await ws.SendAsync(new ArraySegment<byte>(outBytes), WebSocketMessageType.Text, true, cancel);
+                }
+            }
+        });
+
+        app.MapGet("/", () => Results.Ok("mcp-memory-manager ws endpoint at /ws"));
+        await app.RunAsync(cancel);
+    }
 
     public static async Task RunAsync(MemoryApi memory, TaskApi tasks, Stream input, Stream output, CancellationToken cancel)
     {
@@ -411,4 +578,3 @@ public static class ToolHost
         return list;
     }
 }
-

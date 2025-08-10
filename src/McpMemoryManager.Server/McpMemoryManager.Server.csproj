@@ -16,6 +16,9 @@
     -->
   </ItemGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
   <None Include="MemoryStore\Schema.sql">
     <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
   </None>

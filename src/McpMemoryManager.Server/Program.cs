@@ -7,17 +7,44 @@ using McpMemoryManager.Server.Tools;
 
 var argv = Environment.GetCommandLineArgs().Skip(1).ToArray();
 var mcpMode = argv.Contains("--mcp", StringComparer.OrdinalIgnoreCase);
+var tcpIdx = Array.FindIndex(argv, a => a.Equals("--tcp", StringComparison.OrdinalIgnoreCase));
+string? tcpEndpoint = null;
+if (tcpIdx >= 0)
+{
+    tcpEndpoint = tcpIdx + 1 < argv.Length ? argv[tcpIdx + 1] : "127.0.0.1:8765";
+}
 
-var dbPath = Path.Combine(AppContext.BaseDirectory, "memory.db");
+var dbIdx = Array.FindIndex(argv, a => a.Equals("--db", StringComparison.OrdinalIgnoreCase));
+string dbPath = dbIdx >= 0 && dbIdx + 1 < argv.Length ? argv[dbIdx + 1] : Path.Combine(AppContext.BaseDirectory, "memory.db");
 var store = await SqliteStore.CreateOrOpenAsync(dbPath);
 Console.WriteLine($"[MCP Memory Manager] DB: {dbPath}");
 
 var memory = new MemoryApi(store);
 var tasks = new TaskApi(store);
 
-if (mcpMode)
+var wsIdx = Array.FindIndex(argv, a => a.Equals("--ws", StringComparison.OrdinalIgnoreCase));
+string? wsEndpoint = null;
+if (wsIdx >= 0)
 {
-    await ToolHost.RunAsync(memory, tasks);
+    wsEndpoint = wsIdx + 1 < argv.Length ? argv[wsIdx + 1] : "http://127.0.0.1:8080";
+}
+
+if (mcpMode || tcpEndpoint != null || wsEndpoint != null)
+{
+    if (tcpEndpoint != null)
+    {
+        Console.Error.WriteLine($"[MCP Memory Manager] Starting TCP server on {tcpEndpoint}");
+        await ToolHost.RunTcpAsync(memory, tasks, tcpEndpoint);
+    }
+    else if (wsEndpoint != null)
+    {
+        Console.Error.WriteLine($"[MCP Memory Manager] Starting WebSocket server at {wsEndpoint}/ws");
+        await ToolHost.RunWebSocketAsync(memory, tasks, wsEndpoint);
+    }
+    else
+    {
+        await ToolHost.RunAsync(memory, tasks);
+    }
     return;
 }
 
