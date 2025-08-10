@@ -44,6 +44,48 @@ public static class ToolHost
                         await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { tools } }, cancel);
                         break;
 
+                    case "resources/list":
+                    {
+                        var (items, _) = await memory.ListAdvancedAsync(limit: 50);
+                        var resources = items.Select(i => new {
+                            uri = $"mem://{i.Namespace}/{i.Id}",
+                            name = i.Title ?? (i.Content.Length > 30 ? i.Content[..30] + "…" : i.Content),
+                            description = i.Type,
+                            mimeType = "text/plain"
+                        }).ToArray();
+                        await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { resources } }, cancel);
+                        break;
+                    }
+
+                    case "resources/read":
+                    {
+                        var @params = root.GetProperty("params");
+                        var uri = @params.GetProperty("uri").GetString()!;
+                        if (!uri.StartsWith("mem://"))
+                        {
+                            await WriteFramedAsync(output, new { jsonrpc = "2.0", id, error = new { code = -32602, message = "Unsupported URI" } }, cancel);
+                            break;
+                        }
+                        var path = uri.Substring("mem://".Length);
+                        var idx = path.IndexOf('/');
+                        if (idx <= 0)
+                        {
+                            await WriteFramedAsync(output, new { jsonrpc = "2.0", id, error = new { code = -32602, message = "Invalid URI" } }, cancel);
+                            break;
+                        }
+                        var ns = path.Substring(0, idx);
+                        var idPart = path.Substring(idx + 1);
+                        var item = await memory.GetAsync(idPart);
+                        if (item is null || item.Namespace != ns)
+                        {
+                            await WriteFramedAsync(output, new { jsonrpc = "2.0", id, error = new { code = -32004, message = "Not found" } }, cancel);
+                            break;
+                        }
+                        var contents = new [] { new { uri, mimeType = "text/plain", text = item.Content } };
+                        await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { contents } }, cancel);
+                        break;
+                    }
+
                     case "tools/call":
                     {
                         var @params = root.GetProperty("params");
@@ -154,6 +196,10 @@ public static class ToolHost
             description = "Delete expired memories",
             inputSchema = new { type = "object", properties = new { ns = new { type = "string", description = "Namespace filter", @nullable = true } } }
         },
+        new { name = "memory.tags.add", description = "Add tags to a memory", inputSchema = new { type = "object", required = new [] { "id", "tags" }, properties = new { id = new { type = "string" }, tags = new { type = "array", items = new { type = "string" } } } } },
+        new { name = "memory.tags.remove", description = "Remove tags from a memory", inputSchema = new { type = "object", required = new [] { "id", "tags" }, properties = new { id = new { type = "string" }, tags = new { type = "array", items = new { type = "string" } } } } },
+        new { name = "memory.refs.add", description = "Add refs to a memory", inputSchema = new { type = "object", required = new [] { "id", "refs" }, properties = new { id = new { type = "string" }, refs = new { type = "array", items = new { type = "string" } } } } },
+        new { name = "memory.refs.remove", description = "Remove refs from a memory", inputSchema = new { type = "object", required = new [] { "id", "refs" }, properties = new { id = new { type = "string" }, refs = new { type = "array", items = new { type = "string" } } } } },
         new {
             name = "task.create",
             description = "Create a task (stored as memory of type 'task')",
@@ -258,6 +304,16 @@ public static class ToolHost
             case "memory.cleanup":
                 return new { removed = await memory.CleanupExpireAsync(GetString(args, "ns")) };
 
+            case "memory.tags.add":
+                return new { ok = await memory.AddTagsAsync(GetString(args, "id")!, GetStringArray(args, "tags") ?? new List<string>()) };
+            case "memory.tags.remove":
+                return new { ok = await memory.RemoveTagsAsync(GetString(args, "id")!, GetStringArray(args, "tags") ?? new List<string>()) };
+            case "memory.refs.add":
+                return new { ok = await memory.AddRefsAsync(GetString(args, "id")!, GetStringArray(args, "refs") ?? new List<string>()) };
+                
+            case "memory.refs.remove":
+                return new { ok = await memory.RemoveRefsAsync(GetString(args, "id")!, GetStringArray(args, "refs") ?? new List<string>()) };
+
             case "task.create":
                 return new { id = await tasks.CreateTaskAsync(
                     title: GetString(args, "title")!,
@@ -303,6 +359,35 @@ public static class ToolHost
                     catch { }
                 }
                 return new { upserted };
+            }
+
+            case "resources/list":
+            {
+                // Minimal resources exposure: list latest memories as mem://<ns>/<id>
+                var (items, _) = await memory.ListAdvancedAsync(limit: 50);
+                var resources = items.Select(i => new {
+                    uri = $"mem://{i.Namespace}/{i.Id}",
+                    name = i.Title ?? (i.Content.Length > 30 ? i.Content[..30] + "…" : i.Content),
+                    description = i.Type,
+                    mimeType = "text/plain"
+                }).ToArray();
+                return new { resources };
+            }
+
+            case "resources/read":
+            {
+                var uri = GetString(args, "uri")!;
+                // parse mem://ns/id
+                if (!uri.StartsWith("mem://")) throw new InvalidOperationException("Unsupported URI");
+                var path = uri.Substring("mem://".Length);
+                var idx = path.IndexOf('/');
+                if (idx <= 0) throw new InvalidOperationException("Invalid URI");
+                var ns = path.Substring(0, idx);
+                var id = path.Substring(idx + 1);
+                var item = await memory.GetAsync(id);
+                if (item is null || item.Namespace != ns) throw new InvalidOperationException("Not found");
+                var contents = new [] { new { uri, mimeType = "text/plain", text = item.Content } };
+                return new { contents };
             }
 
             default:

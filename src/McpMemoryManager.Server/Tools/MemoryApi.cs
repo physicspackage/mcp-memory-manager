@@ -67,4 +67,40 @@ public sealed class MemoryApi
 
     public Task<IReadOnlyList<MemoryItem>> ExportAsync(string? ns = null) => _store.ExportMemoriesAsync(ns);
     public Task<int> UpsertAsync(MemoryItem item) => _store.UpsertMemoryAsync(item);
+
+    public async Task<bool> AddTagsAsync(string id, IEnumerable<string> add)
+    {
+        var item = await _store.GetMemoryAsync(id);
+        if (item is null) return false;
+        var set = new HashSet<string>(item.Tags ?? new List<string>());
+        foreach (var t in add) set.Add(t);
+        return await _store.UpdateMemoryAsync(id, tags: set);
+    }
+
+    public async Task<bool> RemoveTagsAsync(string id, IEnumerable<string> remove)
+    {
+        var item = await _store.GetMemoryAsync(id);
+        if (item is null) return false;
+        var set = new HashSet<string>(item.Tags ?? new List<string>());
+        foreach (var t in remove) set.Remove(t);
+        return await _store.UpdateMemoryAsync(id, tags: set);
+    }
+
+    public async Task<bool> AddRefsAsync(string id, IEnumerable<string> add)
+    {
+        var item = await _store.GetMemoryAsync(id);
+        if (item is null) return false;
+        var set = new HashSet<string>(item.Refs ?? new List<string>());
+        foreach (var r in add) set.Add(r);
+        return await _store.UpdateMemoryAsync(id, refs: set);
+    }
+
+    public async Task<bool> RemoveRefsAsync(string id, IEnumerable<string> remove)
+    {
+        var item = await _store.GetMemoryAsync(id);
+        if (item is null) return false;
+        var set = new HashSet<string>(item.Refs ?? new List<string>());
+        foreach (var r in remove) set.Remove(r);
+        return await _store.UpdateMemoryAsync(id, refs: set);
+    }
 }
