@@ -44,16 +44,23 @@ public static class ToolHost
                         await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { tools } }, cancel);
                         break;
 
-                    case "resources/list":
+                                        case "resources/list":
                     {
-                        var (items, _) = await memory.ListAdvancedAsync(limit: 50);
+                        var @params = root.TryGetProperty("params", out var p) ? p : default;
+                        var (items, next) = await memory.ListAdvancedAsync(
+                            ns: GetString(@params, "ns"),
+                            types: GetStringArray(@params, "types"),
+                            tags: GetStringArray(@params, "tags"),
+                            limit: GetInt(@params, "limit") ?? 50,
+                            cursor: GetString(@params, "cursor")
+                        );
                         var resources = items.Select(i => new {
                             uri = $"mem://{i.Namespace}/{i.Id}",
-                            name = i.Title ?? (i.Content.Length > 30 ? i.Content[..30] + "â€¦" : i.Content),
+                            name = i.Title ?? (i.Content.Length > 30 ? i.Content[..30] + "…" : i.Content),
                             description = i.Type,
                             mimeType = "text/plain"
                         }).ToArray();
-                        await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { resources } }, cancel);
+                        await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { resources, nextCursor = next } }, cancel);
                         break;
                     }
 
@@ -222,6 +229,16 @@ public static class ToolHost
             name = "export.import",
             description = "Import NDJSON memories (upsert by id)",
             inputSchema = new { type = "object", required = new [] { "ndjson" }, properties = new { ndjson = new { type = "string" } } }
+        },
+        new {
+            name = "memory.link",
+            description = "Link two memories (adds to refs and records relation)",
+            inputSchema = new { type = "object", required = new [] { "from_id", "to_id" }, properties = new { from_id = new { type = "string" }, to_id = new { type = "string" }, relation = new { type = "string", @nullable = true } } }
+        },
+        new {
+            name = "memory.summarize",
+            description = "Create a summary memory referencing the source",
+            inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" }, style = new { type = "string", @nullable = true } } }
         }
     };
 
@@ -303,6 +320,12 @@ public static class ToolHost
 
             case "memory.cleanup":
                 return new { removed = await memory.CleanupExpireAsync(GetString(args, "ns")) };
+
+            case "memory.link":
+                return new { ok = await memory.LinkAsync(GetString(args, "from_id")!, GetString(args, "to_id")!, GetString(args, "relation")) };
+
+            case "memory.summarize":
+                return new { id = await memory.SummarizeAsync(GetString(args, "id")!, GetString(args, "style")) };
 
             case "memory.tags.add":
                 return new { ok = await memory.AddTagsAsync(GetString(args, "id")!, GetStringArray(args, "tags") ?? new List<string>()) };

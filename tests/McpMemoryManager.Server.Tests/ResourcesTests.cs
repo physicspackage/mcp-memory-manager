@@ -60,7 +60,7 @@ public class ResourcesTests
 
         var id = await memory.CreateAsync("resource-content", ns: "R", type: "note");
 
-        var init = new { jsonrpc = "2.0", id = 1, method = "resources/list" };
+        var init = new { jsonrpc = "2.0", id = 1, method = "resources/list", @params = new { } };
         var res = RunBatch(memory, tasks, init);
         var arr = res[0].GetProperty("result").GetProperty("resources").EnumerateArray().ToArray();
         Assert.NotEmpty(arr);
@@ -72,4 +72,3 @@ public class ResourcesTests
         Assert.Equal("resource-content", text);
     }
 }
-

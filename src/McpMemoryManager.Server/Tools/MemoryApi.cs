@@ -103,4 +103,40 @@ public sealed class MemoryApi
         foreach (var r in remove) set.Remove(r);
         return await _store.UpdateMemoryAsync(id, refs: set);
     }
+
+    public async Task<bool> LinkAsync(string fromId, string toId, string? relation = null)
+    {
+        var item = await _store.GetMemoryAsync(fromId);
+        if (item is null) return false;
+        var refs = new HashSet<string>(item.Refs ?? new List<string>()) { toId };
+        Dictionary<string, object>? meta = item.Metadata is null ? new Dictionary<string, object>() : new Dictionary<string, object>(item.Metadata);
+        if (!string.IsNullOrWhiteSpace(relation))
+        {
+            // Store simple relation map under metadata.relations[toId] = relation
+            if (!meta.TryGetValue("relations", out var relObj) || relObj is null)
+            {
+                meta["relations"] = new Dictionary<string, string>();
+            }
+            var map = meta["relations"] as Dictionary<string, string> ?? new Dictionary<string, string>();
+            map[toId] = relation!;
+            meta["relations"] = map;
+        }
+        return await _store.UpdateMemoryAsync(fromId, refs: refs, metadata: meta);
+    }
+
+    public async Task<string> SummarizeAsync(string id, string? style = null)
+    {
+        var item = await _store.GetMemoryAsync(id);
+        if (item is null) throw new InvalidOperationException("Not found");
+        var text = item.Content ?? string.Empty;
+        var max = 280;
+        var snippet = text.Length <= max ? text : text[..max] + "…";
+        if (!string.IsNullOrWhiteSpace(style))
+        {
+            snippet = $"[{style}] {snippet}";
+        }
+        var title = item.Title is null ? $"Summary of {id[..8]}" : $"Summary: {item.Title}";
+        var summaryId = await _store.CreateMemoryAsync(content: snippet, type: "summary", title: title, ns: item.Namespace, refs: new [] { id });
+        return summaryId;
+    }
 }
