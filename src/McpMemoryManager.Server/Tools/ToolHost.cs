@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using McpMemoryManager.Server.Models;
 
 namespace McpMemoryManager.Server.Tools;
 
@@ -165,6 +166,16 @@ public static class ToolHost
             name = "task.list",
             description = "List tasks",
             inputSchema = new { type = "object", properties = new { limit = new { type = "integer", description = "Max items", @default = 50 } } }
+        },
+        new {
+            name = "export.dump",
+            description = "Export memories as NDJSON",
+            inputSchema = new { type = "object", properties = new { ns = new { type = "string", @nullable = true } } }
+        },
+        new {
+            name = "export.import",
+            description = "Import NDJSON memories (upsert by id)",
+            inputSchema = new { type = "object", required = new [] { "ndjson" }, properties = new { ndjson = new { type = "string" } } }
         }
     };
 
@@ -260,6 +271,39 @@ public static class ToolHost
                 return new { ok = await tasks.UpdateStatusAsync(GetString(args, "id")!, GetString(args, "status")!, GetString(args, "note")) };
             case "task.add_note":
                 return new { id = await tasks.AddNoteAsync(GetString(args, "id")!, GetString(args, "note")!) };
+
+            case "export.dump":
+            {
+                var ns = GetString(args, "ns");
+                var items = await memory.ExportAsync(ns);
+                var sb = new StringBuilder();
+                foreach (var it in items)
+                {
+                    sb.AppendLine(JsonSerializer.Serialize(it));
+                }
+                return new { ndjson = sb.ToString(), count = items.Count };
+            }
+
+            case "export.import":
+            {
+                var s = GetString(args, "ndjson") ?? string.Empty;
+                var lines = s.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+                int upserted = 0;
+                foreach (var line in lines)
+                {
+                    try
+                    {
+                        var item = JsonSerializer.Deserialize<MemoryItem>(line);
+                        if (item is not null)
+                        {
+                            await memory.UpsertAsync(item);
+                            upserted++;
+                        }
+                    }
+                    catch { }
+                }
+                return new { upserted };
+            }
 
             default:
                 throw new InvalidOperationException($"Unknown tool: {name}");
