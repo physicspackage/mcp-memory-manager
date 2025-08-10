@@ -1,39 +1,46 @@
+using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace McpMemoryManager.Server.Tools;
 
 public static class ToolHost
 {
-    public static async Task RunAsync(MemoryApi memory, TaskApi tasks)
+    public static Task RunAsync(MemoryApi memory, TaskApi tasks)
+        => RunAsync(memory, tasks, Console.OpenStandardInput(), Console.OpenStandardOutput(), CancellationToken.None);
+
+    public static async Task RunAsync(MemoryApi memory, TaskApi tasks, Stream input, Stream output, CancellationToken cancel)
     {
         var tools = GetTools();
-        while (true)
+        while (!cancel.IsCancellationRequested)
         {
-            var line = await Console.In.ReadLineAsync();
-            if (line is null) break;
-            if (string.IsNullOrWhiteSpace(line)) continue;
-
+            var reqBytes = await ReadFramedAsync(input, cancel);
+            if (reqBytes is null) break; // EOF
             try
             {
-                using var doc = JsonDocument.Parse(line);
+                using var doc = JsonDocument.Parse(reqBytes);
                 var root = doc.RootElement;
-                var id = root.TryGetProperty("id", out var idEl) ? idEl.Clone() : default;
+                var hasId = root.TryGetProperty("id", out var idEl);
+                var id = hasId ? idEl.Clone() : default;
                 var method = root.GetProperty("method").GetString();
 
                 switch (method)
                 {
                     case "initialize":
-                        await WriteResponseAsync(id, new
+                        await WriteFramedAsync(output, new
                         {
-                            protocolVersion = "2024-11-05",
-                            server = new { name = "mcp-memory-manager", version = "0.1.0" },
-                            capabilities = new { tools = new { } }
-                        });
+                            jsonrpc = "2.0",
+                            id,
+                            result = new
+                            {
+                                protocolVersion = "2024-11-05",
+                                server = new { name = "mcp-memory-manager", version = "0.1.0" },
+                                capabilities = new { tools = new { } }
+                            }
+                        }, cancel);
                         break;
 
                     case "tools/list":
-                        await WriteResponseAsync(id, new { tools });
+                        await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { tools } }, cancel);
                         break;
 
                     case "tools/call":
@@ -42,18 +49,18 @@ public static class ToolHost
                         var name = @params.GetProperty("name").GetString()!;
                         var args = @params.TryGetProperty("arguments", out var a) ? a : default;
                         var result = await CallToolAsync(name, args, memory, tasks);
-                        await WriteResponseAsync(id, new { content = result });
+                        await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { content = result } }, cancel);
                         break;
                     }
 
                     default:
-                        await WriteErrorAsync(id, -32601, $"Method not found: {method}");
+                        await WriteFramedAsync(output, new { jsonrpc = "2.0", id, error = new { code = -32601, message = $"Method not found: {method}" } }, cancel);
                         break;
                 }
             }
             catch (Exception ex)
             {
-                await WriteErrorAsync(default, -32603, ex.Message);
+                await WriteFramedAsync(output, new { jsonrpc = "2.0", id = (JsonElement?)null, error = new { code = -32603, message = ex.Message } }, cancel);
             }
         }
     }
@@ -66,50 +73,53 @@ public static class ToolHost
             inputSchema = new {
                 type = "object",
                 properties = new {
-                    content = new { type = "string" },
-                    type = new { type = "string",  @default = "note" },
-                    title = new { type = "string",  @nullable = true },
-                    agentId = new { type = "string",  @default = "" },
-                    ns = new { type = "string",  @default = "default" },
-                    metadata = new { type = "object", additionalProperties = true, @nullable = true },
-                    tags = new { type = "array", items = new { type = "string" }, @nullable = true },
-                    refs = new { type = "array", items = new { type = "string" }, @nullable = true },
-                    importance = new { type = "number", @default = 0.3 },
-                    pin = new { type = "boolean", @default = false },
-                    expiresAt = new { type = "string",  description = "ISO-8601 timestamp", @nullable = true }
+                    content = new { type = "string", description = "Primary content of the memory." },
+                    type = new { type = "string",  description = "Type/category of memory.", @default = "note" },
+                    title = new { type = "string",  description = "Optional title.", @nullable = true },
+                    agentId = new { type = "string",  description = "Originating agent id.", @default = "" },
+                    ns = new { type = "string",  description = "Namespace bucket.", @default = "default" },
+                    metadata = new { type = "object", description = "Arbitrary key/value metadata.", additionalProperties = true, @nullable = true },
+                    tags = new { type = "array", description = "List of tags.", items = new { type = "string" }, @nullable = true },
+                    refs = new { type = "array", description = "List of references (ids/urls).", items = new { type = "string" }, @nullable = true },
+                    importance = new { type = "number", description = "Importance score 0-1.", @default = 0.3 },
+                    pin = new { type = "boolean", description = "Pinned flag.", @default = false },
+                    expiresAt = new { type = "string",  description = "ISO-8601 expiry timestamp.", @nullable = true }
                 },
                 required = new [] { "content" }
-            }
+            },
+            examples = new [] { new { arguments = new { content = "Buy milk", type = "note", tags = new [] { "groceries" } } } }
         },
         new {
             name = "memory.get",
             description = "Get a memory item by id",
-            inputSchema = new { type = "object", properties = new { id = new { type = "string" } }, required = new [] { "id" } }
+            inputSchema = new { type = "object", properties = new { id = new { type = "string", description = "Memory id" } }, required = new [] { "id" } }
         },
         new {
             name = "memory.list",
             description = "List recent memories",
-            inputSchema = new { type = "object", properties = new { ns = new { type = "string", @nullable = true }, type = new { type = "string", @nullable = true }, limit = new { type = "integer", @default = 50 } } }
+            inputSchema = new { type = "object", properties = new { ns = new { type = "string", description = "Namespace filter", @nullable = true }, type = new { type = "string", description = "Type filter", @nullable = true }, limit = new { type = "integer", description = "Max items", @default = 50 } } }
         },
         new {
             name = "memory.search",
             description = "Search memories via FTS5",
-            inputSchema = new { type = "object", properties = new { query = new { type = "string" }, ns = new { type = "string", @nullable = true }, limit = new { type = "integer", @default = 20 } }, required = new [] { "query" } }
+            inputSchema = new { type = "object", properties = new { query = new { type = "string", description = "Search query" }, ns = new { type = "string", description = "Namespace filter", @nullable = true }, limit = new { type = "integer", description = "Max items", @default = 20 } }, required = new [] { "query" } },
+            examples = new [] { new { arguments = new { query = "zebra" } } }
         },
         new {
             name = "memory.cleanup",
             description = "Delete expired memories",
-            inputSchema = new { type = "object", properties = new { ns = new { type = "string", @nullable = true } } }
+            inputSchema = new { type = "object", properties = new { ns = new { type = "string", description = "Namespace filter", @nullable = true } } }
         },
         new {
             name = "task.create",
             description = "Create a task (stored as memory of type 'task')",
-            inputSchema = new { type = "object", properties = new { title = new { type = "string" }, ns = new { type = "string", @default = "default" } }, required = new [] { "title" } }
+            inputSchema = new { type = "object", properties = new { title = new { type = "string", description = "Task title" }, ns = new { type = "string", description = "Namespace", @default = "default" } }, required = new [] { "title" } },
+            examples = new [] { new { arguments = new { title = "Write tests", ns = "proj" } } }
         },
         new {
             name = "task.list",
             description = "List tasks",
-            inputSchema = new { type = "object", properties = new { limit = new { type = "integer", @default = 50 } } }
+            inputSchema = new { type = "object", properties = new { limit = new { type = "integer", description = "Max items", @default = 50 } } }
         }
     };
 
@@ -170,18 +180,62 @@ public static class ToolHost
         }
     }
 
-    private static async Task WriteResponseAsync(JsonElement id, object result)
+    private static async Task<(byte[] Buffer, int Length)?> ReadHeadersAsync(Stream input, CancellationToken cancel)
     {
-        var payload = JsonSerializer.Serialize(new { jsonrpc = "2.0", id, result });
-        await Console.Out.WriteLineAsync(payload);
-        await Console.Out.FlushAsync();
+        var headerBuffer = new List<byte>(256);
+        var span = new byte[1];
+        int matched = 0;
+        while (true)
+        {
+            var read = await input.ReadAsync(span, 0, 1, cancel);
+            if (read == 0)
+            {
+                if (headerBuffer.Count == 0) return null; // EOF
+                break;
+            }
+            headerBuffer.Add(span[0]);
+            if ((matched == 0 || matched == 2) && span[0] == (byte)'\r') matched++;
+            else if ((matched == 1 || matched == 3) && span[0] == (byte)'\n') matched++;
+            else matched = span[0] == (byte)'\r' ? 1 : 0;
+            if (matched == 4) break; // \r\n\r\n
+        }
+        return (headerBuffer.ToArray(), headerBuffer.Count);
     }
 
-    private static async Task WriteErrorAsync(JsonElement id, int code, string message)
+    private static async Task<byte[]?> ReadFramedAsync(Stream input, CancellationToken cancel)
     {
-        var payload = JsonSerializer.Serialize(new { jsonrpc = "2.0", id, error = new { code, message } });
-        await Console.Out.WriteLineAsync(payload);
-        await Console.Out.FlushAsync();
+        var headers = await ReadHeadersAsync(input, cancel);
+        if (headers is null) return null;
+        var text = Encoding.ASCII.GetString(headers.Value.Buffer, 0, headers.Value.Length);
+        int contentLength = 0;
+        foreach (var line in text.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+            {
+                var val = line.Substring("Content-Length:".Length).Trim();
+                contentLength = int.Parse(val);
+            }
+        }
+        var body = new byte[contentLength];
+        var readTotal = 0;
+        while (readTotal < contentLength)
+        {
+            var n = await input.ReadAsync(body, readTotal, contentLength - readTotal, cancel);
+            if (n == 0) break;
+            readTotal += n;
+        }
+        if (readTotal != contentLength) return null;
+        return body;
+    }
+
+    private static async Task WriteFramedAsync(Stream output, object payload, CancellationToken cancel)
+    {
+        var json = JsonSerializer.Serialize(payload);
+        var bytes = Encoding.UTF8.GetBytes(json);
+        var header = Encoding.ASCII.GetBytes($"Content-Length: {bytes.Length}\r\nContent-Type: application/json\r\n\r\n");
+        await output.WriteAsync(header, 0, header.Length, cancel);
+        await output.WriteAsync(bytes, 0, bytes.Length, cancel);
+        await output.FlushAsync(cancel);
     }
 
     private static string? GetString(JsonElement obj, string name) =>
