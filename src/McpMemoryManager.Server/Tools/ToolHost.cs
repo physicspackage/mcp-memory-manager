@@ -15,7 +15,7 @@ public static class ToolHost
         while (!cancel.IsCancellationRequested)
         {
             var reqBytes = await ReadFramedAsync(input, cancel);
-            if (reqBytes is null) break; // EOF
+            if (reqBytes is null) break;
             try
             {
                 using var doc = JsonDocument.Parse(reqBytes);
@@ -44,19 +44,24 @@ public static class ToolHost
                         await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { tools } }, cancel);
                         break;
 
-                                        case "resources/list":
+                    case "resources/list":
                     {
                         var @params = root.TryGetProperty("params", out var p) ? p : default;
                         var (items, next) = await memory.ListAdvancedAsync(
                             ns: GetString(@params, "ns"),
                             types: GetStringArray(@params, "types"),
                             tags: GetStringArray(@params, "tags"),
+                            pinned: GetBool(@params, "pinned"),
+                            archived: GetBool(@params, "archived"),
+                            before: GetDateTimeOffset(@params, "before"),
+                            after: GetDateTimeOffset(@params, "after"),
                             limit: GetInt(@params, "limit") ?? 50,
                             cursor: GetString(@params, "cursor")
                         );
-                        var resources = items.Select(i => new {
+                        var resources = items.Select(i => new
+                        {
                             uri = $"mem://{i.Namespace}/{i.Id}",
-                            name = i.Title ?? (i.Content.Length > 30 ? i.Content[..30] + "�" : i.Content),
+                            name = i.Title ?? (i.Content.Length > 30 ? i.Content[..30] + "…" : i.Content),
                             description = i.Type,
                             mimeType = "text/plain"
                         }).ToArray();
@@ -68,6 +73,7 @@ public static class ToolHost
                     {
                         var @params = root.GetProperty("params");
                         var uri = @params.GetProperty("uri").GetString()!;
+                        var format = GetString(@params, "format") ?? "text";
                         if (!uri.StartsWith("mem://"))
                         {
                             await WriteFramedAsync(output, new { jsonrpc = "2.0", id, error = new { code = -32602, message = "Unsupported URI" } }, cancel);
@@ -88,7 +94,10 @@ public static class ToolHost
                             await WriteFramedAsync(output, new { jsonrpc = "2.0", id, error = new { code = -32004, message = "Not found" } }, cancel);
                             break;
                         }
-                        var contents = new [] { new { uri, mimeType = "text/plain", text = item.Content } };
+                        object contentObj = format.Equals("json", StringComparison.OrdinalIgnoreCase)
+                            ? new { uri, mimeType = "application/json", text = JsonSerializer.Serialize(item) }
+                            : new { uri, mimeType = "text/plain", text = item.Content };
+                        var contents = new[] { contentObj };
                         await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { contents } }, cancel);
                         break;
                     }
@@ -136,110 +145,32 @@ public static class ToolHost
                     expiresAt = new { type = "string",  description = "ISO-8601 expiry timestamp.", @nullable = true }
                 },
                 required = new [] { "content" }
-            },
-            examples = new [] { new { arguments = new { content = "Buy milk", type = "note", tags = new [] { "groceries" } } } }
-        },
-        new {
-            name = "memory.get",
-            description = "Get a memory item by id",
-            inputSchema = new { type = "object", properties = new { id = new { type = "string", description = "Memory id" } }, required = new [] { "id" } }
-        },
-        new {
-            name = "memory.update",
-            description = "Update fields of a memory (partial)",
-            inputSchema = new {
-                type = "object",
-                required = new [] { "id" },
-                properties = new {
-                    id = new { type = "string" },
-                    content = new { type = "string", @nullable = true },
-                    title = new { type = "string", @nullable = true },
-                    metadata = new { type = "object", additionalProperties = true, @nullable = true },
-                    tags = new { type = "array", items = new { type = "string" }, @nullable = true },
-                    refs = new { type = "array", items = new { type = "string" }, @nullable = true },
-                    importance = new { type = "number", @nullable = true },
-                    pin = new { type = "boolean", @nullable = true },
-                    archived = new { type = "boolean", @nullable = true },
-                    expiresAt = new { type = "string", @nullable = true }
-                }
             }
         },
-        new {
-            name = "memory.delete",
-            description = "Delete a memory (soft by default)",
-            inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" }, hard = new { type = "boolean", @default = false } } }
-        },
+        new { name = "memory.get", description = "Get a memory item by id", inputSchema = new { type = "object", properties = new { id = new { type = "string" } }, required = new [] { "id" } } },
+        new { name = "memory.update", description = "Update fields of a memory (partial)", inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" }, content = new { type = "string", @nullable = true }, title = new { type = "string", @nullable = true }, metadata = new { type = "object", additionalProperties = true, @nullable = true }, tags = new { type = "array", items = new { type = "string" }, @nullable = true }, refs = new { type = "array", items = new { type = "string" }, @nullable = true }, importance = new { type = "number", @nullable = true }, pin = new { type = "boolean", @nullable = true }, archived = new { type = "boolean", @nullable = true }, expiresAt = new { type = "string", @nullable = true } } } },
+        new { name = "memory.delete", description = "Delete a memory (soft by default)", inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" }, hard = new { type = "boolean", @default = false } } } },
         new { name = "memory.archive", description = "Archive a memory", inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" } } } },
         new { name = "memory.unarchive", description = "Unarchive a memory", inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" } } } },
         new { name = "memory.pin", description = "Pin a memory", inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" } } } },
         new { name = "memory.unpin", description = "Unpin a memory", inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" } } } },
-        new {
-            name = "memory.list",
-            description = "List recent memories",
-            inputSchema = new {
-                type = "object",
-                properties = new {
-                    agentId = new { type = "string", @nullable = true },
-                    ns = new { type = "string", @nullable = true },
-                    types = new { type = "array", items = new { type = "string" }, @nullable = true },
-                    tags = new { type = "array", items = new { type = "string" }, @nullable = true },
-                    pinned = new { type = "boolean", @nullable = true },
-                    archived = new { type = "boolean", @nullable = true },
-                    before = new { type = "string", @nullable = true },
-                    after = new { type = "string", @nullable = true },
-                    limit = new { type = "integer", @default = 50 },
-                    cursor = new { type = "string", @nullable = true }
-                }
-            }
-        },
-        new {
-            name = "memory.search",
-            description = "Search memories via FTS5",
-            inputSchema = new { type = "object", properties = new { query = new { type = "string", description = "Search query" }, ns = new { type = "string", description = "Namespace filter", @nullable = true }, limit = new { type = "integer", description = "Max items", @default = 20 } }, required = new [] { "query" } },
-            examples = new [] { new { arguments = new { query = "zebra" } } }
-        },
-        new {
-            name = "memory.cleanup",
-            description = "Delete expired memories",
-            inputSchema = new { type = "object", properties = new { ns = new { type = "string", description = "Namespace filter", @nullable = true } } }
-        },
+        new { name = "memory.list", description = "List recent memories", inputSchema = new { type = "object", properties = new { agentId = new { type = "string", @nullable = true }, ns = new { type = "string", @nullable = true }, types = new { type = "array", items = new { type = "string" }, @nullable = true }, tags = new { type = "array", items = new { type = "string" }, @nullable = true }, pinned = new { type = "boolean", @nullable = true }, archived = new { type = "boolean", @nullable = true }, before = new { type = "string", @nullable = true }, after = new { type = "string", @nullable = true }, limit = new { type = "integer", @default = 50 }, cursor = new { type = "string", @nullable = true } } } },
+        new { name = "memory.search", description = "Search memories via FTS5", inputSchema = new { type = "object", properties = new { query = new { type = "string" }, ns = new { type = "string", @nullable = true }, limit = new { type = "integer", @default = 20 } }, required = new [] { "query" } } },
+        new { name = "memory.cleanup", description = "Delete expired memories", inputSchema = new { type = "object", properties = new { ns = new { type = "string", @nullable = true } } } },
         new { name = "memory.tags.add", description = "Add tags to a memory", inputSchema = new { type = "object", required = new [] { "id", "tags" }, properties = new { id = new { type = "string" }, tags = new { type = "array", items = new { type = "string" } } } } },
         new { name = "memory.tags.remove", description = "Remove tags from a memory", inputSchema = new { type = "object", required = new [] { "id", "tags" }, properties = new { id = new { type = "string" }, tags = new { type = "array", items = new { type = "string" } } } } },
         new { name = "memory.refs.add", description = "Add refs to a memory", inputSchema = new { type = "object", required = new [] { "id", "refs" }, properties = new { id = new { type = "string" }, refs = new { type = "array", items = new { type = "string" } } } } },
         new { name = "memory.refs.remove", description = "Remove refs from a memory", inputSchema = new { type = "object", required = new [] { "id", "refs" }, properties = new { id = new { type = "string" }, refs = new { type = "array", items = new { type = "string" } } } } },
-        new {
-            name = "task.create",
-            description = "Create a task (stored as memory of type 'task')",
-            inputSchema = new { type = "object", properties = new { title = new { type = "string", description = "Task title" }, ns = new { type = "string", description = "Namespace", @default = "default" } }, required = new [] { "title" } },
-            examples = new [] { new { arguments = new { title = "Write tests", ns = "proj" } } }
-        },
+        new { name = "memory.link", description = "Link two memories", inputSchema = new { type = "object", required = new [] { "from_id", "to_id" }, properties = new { from_id = new { type = "string" }, to_id = new { type = "string" }, relation = new { type = "string", @nullable = true } } } },
+        new { name = "memory.summarize", description = "Summarize a memory", inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" }, style = new { type = "string", @nullable = true } } } },
+        new { name = "memory.summarize_thread", description = "Summarize a set of memories", inputSchema = new { type = "object", required = new [] { "source_ids" }, properties = new { source_ids = new { type = "array", items = new { type = "string" } }, style = new { type = "string", @nullable = true } } } },
+        new { name = "memory.merge", description = "Merge memories", inputSchema = new { type = "object", required = new [] { "source_ids" }, properties = new { source_ids = new { type = "array", items = new { type = "string" } }, target_title = new { type = "string", @nullable = true }, ns = new { type = "string", @nullable = true } } } },
+        new { name = "task.create", description = "Create a task", inputSchema = new { type = "object", properties = new { title = new { type = "string" }, ns = new { type = "string", @default = "default" } }, required = new [] { "title" } } },
         new { name = "task.update_status", description = "Update task status", inputSchema = new { type = "object", required = new [] { "id", "status" }, properties = new { id = new { type = "string" }, status = new { type = "string" }, note = new { type = "string", @nullable = true } } } },
         new { name = "task.add_note", description = "Attach a note to a task", inputSchema = new { type = "object", required = new [] { "id", "note" }, properties = new { id = new { type = "string" }, note = new { type = "string" } } } },
-        new {
-            name = "task.list",
-            description = "List tasks",
-            inputSchema = new { type = "object", properties = new { limit = new { type = "integer", description = "Max items", @default = 50 } } }
-        },
-        new {
-            name = "export.dump",
-            description = "Export memories as NDJSON",
-            inputSchema = new { type = "object", properties = new { ns = new { type = "string", @nullable = true } } }
-        },
-        new {
-            name = "export.import",
-            description = "Import NDJSON memories (upsert by id)",
-            inputSchema = new { type = "object", required = new [] { "ndjson" }, properties = new { ndjson = new { type = "string" } } }
-        },
-        new {
-            name = "memory.link",
-            description = "Link two memories (adds to refs and records relation)",
-            inputSchema = new { type = "object", required = new [] { "from_id", "to_id" }, properties = new { from_id = new { type = "string" }, to_id = new { type = "string" }, relation = new { type = "string", @nullable = true } } }
-        },
-        new {
-            name = "memory.summarize",
-            description = "Create a summary memory referencing the source",
-            inputSchema = new { type = "object", required = new [] { "id" }, properties = new { id = new { type = "string" }, style = new { type = "string", @nullable = true } } }
-        }
+        new { name = "task.list", description = "List tasks", inputSchema = new { type = "object", properties = new { limit = new { type = "integer", @default = 50 } } } },
+        new { name = "export.dump", description = "Export NDJSON", inputSchema = new { type = "object", properties = new { ns = new { type = "string", @nullable = true } } } },
+        new { name = "export.import", description = "Import NDJSON", inputSchema = new { type = "object", required = new [] { "ndjson" }, properties = new { ndjson = new { type = "string" } } } }
     };
 
     private static async Task<object> CallToolAsync(string name, JsonElement args, MemoryApi memory, TaskApi tasks)
@@ -321,21 +252,26 @@ public static class ToolHost
             case "memory.cleanup":
                 return new { removed = await memory.CleanupExpireAsync(GetString(args, "ns")) };
 
-            case "memory.link":
-                return new { ok = await memory.LinkAsync(GetString(args, "from_id")!, GetString(args, "to_id")!, GetString(args, "relation")) };
-
-            case "memory.summarize":
-                return new { id = await memory.SummarizeAsync(GetString(args, "id")!, GetString(args, "style")) };
-
             case "memory.tags.add":
                 return new { ok = await memory.AddTagsAsync(GetString(args, "id")!, GetStringArray(args, "tags") ?? new List<string>()) };
             case "memory.tags.remove":
                 return new { ok = await memory.RemoveTagsAsync(GetString(args, "id")!, GetStringArray(args, "tags") ?? new List<string>()) };
             case "memory.refs.add":
                 return new { ok = await memory.AddRefsAsync(GetString(args, "id")!, GetStringArray(args, "refs") ?? new List<string>()) };
-                
             case "memory.refs.remove":
                 return new { ok = await memory.RemoveRefsAsync(GetString(args, "id")!, GetStringArray(args, "refs") ?? new List<string>()) };
+
+            case "memory.link":
+                return new { ok = await memory.LinkAsync(GetString(args, "from_id")!, GetString(args, "to_id")!, GetString(args, "relation")) };
+
+            case "memory.summarize":
+                return new { id = await memory.SummarizeAsync(GetString(args, "id")!, GetString(args, "style")) };
+
+            case "memory.summarize_thread":
+                return new { id = await memory.SummarizeThreadAsync(GetStringArray(args, "source_ids") ?? new List<string>(), GetString(args, "style")) };
+
+            case "memory.merge":
+                return new { id = await memory.MergeAsync(GetStringArray(args, "source_ids") ?? new List<string>(), GetString(args, "target_title"), GetString(args, "ns")) };
 
             case "task.create":
                 return new { id = await tasks.CreateTaskAsync(
@@ -384,35 +320,6 @@ public static class ToolHost
                 return new { upserted };
             }
 
-            case "resources/list":
-            {
-                // Minimal resources exposure: list latest memories as mem://<ns>/<id>
-                var (items, _) = await memory.ListAdvancedAsync(limit: 50);
-                var resources = items.Select(i => new {
-                    uri = $"mem://{i.Namespace}/{i.Id}",
-                    name = i.Title ?? (i.Content.Length > 30 ? i.Content[..30] + "…" : i.Content),
-                    description = i.Type,
-                    mimeType = "text/plain"
-                }).ToArray();
-                return new { resources };
-            }
-
-            case "resources/read":
-            {
-                var uri = GetString(args, "uri")!;
-                // parse mem://ns/id
-                if (!uri.StartsWith("mem://")) throw new InvalidOperationException("Unsupported URI");
-                var path = uri.Substring("mem://".Length);
-                var idx = path.IndexOf('/');
-                if (idx <= 0) throw new InvalidOperationException("Invalid URI");
-                var ns = path.Substring(0, idx);
-                var id = path.Substring(idx + 1);
-                var item = await memory.GetAsync(id);
-                if (item is null || item.Namespace != ns) throw new InvalidOperationException("Not found");
-                var contents = new [] { new { uri, mimeType = "text/plain", text = item.Content } };
-                return new { contents };
-            }
-
             default:
                 throw new InvalidOperationException($"Unknown tool: {name}");
         }
@@ -428,14 +335,14 @@ public static class ToolHost
             var read = await input.ReadAsync(span, 0, 1, cancel);
             if (read == 0)
             {
-                if (headerBuffer.Count == 0) return null; // EOF
+                if (headerBuffer.Count == 0) return null;
                 break;
             }
             headerBuffer.Add(span[0]);
             if ((matched == 0 || matched == 2) && span[0] == (byte)'\r') matched++;
             else if ((matched == 1 || matched == 3) && span[0] == (byte)'\n') matched++;
             else matched = span[0] == (byte)'\r' ? 1 : 0;
-            if (matched == 4) break; // \r\n\r\n
+            if (matched == 4) break;
         }
         return (headerBuffer.ToArray(), headerBuffer.Count);
     }
@@ -504,3 +411,4 @@ public static class ToolHost
         return list;
     }
 }
+

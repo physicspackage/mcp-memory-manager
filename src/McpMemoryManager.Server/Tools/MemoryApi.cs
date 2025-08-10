@@ -139,4 +139,42 @@ public sealed class MemoryApi
         var summaryId = await _store.CreateMemoryAsync(content: snippet, type: "summary", title: title, ns: item.Namespace, refs: new [] { id });
         return summaryId;
     }
+
+    public async Task<string> MergeAsync(IEnumerable<string> sourceIds, string? targetTitle = null, string? ns = null)
+    {
+        var ids = sourceIds.ToList();
+        if (ids.Count == 0) throw new ArgumentException("sourceIds required");
+        var items = new List<MemoryItem>();
+        foreach (var id in ids)
+        {
+            var m = await _store.GetMemoryAsync(id);
+            if (m != null) items.Add(m);
+        }
+        if (items.Count == 0) throw new InvalidOperationException("No valid sources");
+        var nsFinal = ns ?? items[0].Namespace;
+        var title = targetTitle ?? $"Merge of {items.Count} items";
+        var content = string.Join("\n\n---\n\n", items.Select(i => i.Content));
+        var newId = await _store.CreateMemoryAsync(content: content, type: "note", title: title, ns: nsFinal, refs: ids);
+        return newId;
+    }
+
+    public async Task<string> SummarizeThreadAsync(IEnumerable<string> sourceIds, string? style = null)
+    {
+        var ids = sourceIds.ToList();
+        if (ids.Count == 0) throw new ArgumentException("sourceIds required");
+        var parts = new List<string>();
+        foreach (var id in ids)
+        {
+            var m = await _store.GetMemoryAsync(id);
+            if (m != null)
+                parts.Add(m.Content);
+        }
+        var text = string.Join(" \u2022 ", parts);
+        var max = 500;
+        var snippet = text.Length <= max ? text : text[..max] + "…";
+        if (!string.IsNullOrWhiteSpace(style)) snippet = $"[{style}] {snippet}";
+        var nsFinal = (await _store.GetMemoryAsync(ids[0]))?.Namespace ?? "default";
+        var sumId = await _store.CreateMemoryAsync(content: snippet, type: "summary", title: $"Thread summary ({ids.Count})", ns: nsFinal, refs: ids);
+        return sumId;
+    }
 }
