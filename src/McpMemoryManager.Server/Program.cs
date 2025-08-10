@@ -3,7 +3,10 @@ using McpMemoryManager.Server.Tools;
 
 // NOTE: This runs today without the MCP SDK installed. It initializes the DB and
 // leaves a simple command loop to smoke‑test create/list/search. Wiring to MCP
-// is stubbed behind TODOs in ToolHost.cs.
+// can be enabled with --mcp to run a minimal JSON-RPC stdio server.
+
+var argv = Environment.GetCommandLineArgs().Skip(1).ToArray();
+var mcpMode = argv.Contains("--mcp", StringComparer.OrdinalIgnoreCase);
 
 var dbPath = Path.Combine(AppContext.BaseDirectory, "memory.db");
 var store = await SqliteStore.CreateOrOpenAsync(dbPath);
@@ -11,6 +14,12 @@ Console.WriteLine($"[MCP Memory Manager] DB: {dbPath}");
 
 var memory = new MemoryApi(store);
 var tasks = new TaskApi(store);
+
+if (mcpMode)
+{
+    await ToolHost.RunAsync(memory, tasks);
+    return;
+}
 
 Console.WriteLine("Type 'help' for commands. Press Ctrl+C to quit.\n");
 while (true)
