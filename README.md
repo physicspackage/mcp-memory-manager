@@ -13,3 +13,75 @@ An **MCP (Model Context Protocol) server** for AI agents to store and manage **m
 - **Export/import** for migration & backups (planned)
 
 ## Project Layout
+
+
+## Run Options
+
+- Build once to restore and compile: `dotnet build`
+
+- CLI mode (default):
+  - `dotnet run --project src/McpMemoryManager.Server`
+  - Starts an interactive REPL to smoke-test create/list/search.
+
+- MCP over stdio: `--mcp`
+  - `dotnet run --project src/McpMemoryManager.Server -- --mcp`
+  - Runs a minimal JSON-RPC 2.0 server over stdin/stdout using Content-Length framing.
+
+- MCP over TCP: `--tcp <HOST:PORT>` or `--tcp <PORT>`
+  - `dotnet run --project src/McpMemoryManager.Server -- --tcp 127.0.0.1:8765`
+  - Frames: HTTP-like headers + JSON body (see Protocol Notes below).
+
+- MCP over WebSocket: `--ws <URL>` or `--ws <HOST:PORT>`
+  - `dotnet run --project src/McpMemoryManager.Server -- --ws 127.0.0.1:8080`
+  - Binds HTTP server at the URL (defaults to `http://<HOST:PORT>` if scheme omitted).
+  - WebSocket endpoint path: `/ws` (connect to `ws://127.0.0.1:8080/ws`).
+
+- Database location: `--db <PATH>`
+  - Stores the SQLite database at the given path.
+  - Example: `--db C:\\data\\mcp-memory.db`
+  - If omitted, defaults to `memory.db` under the app base directory.
+
+Examples
+
+- Stdio MCP with custom DB path:
+  - `dotnet run --project src/McpMemoryManager.Server -- --mcp --db ./.local/memory.db`
+
+- TCP on localhost:8765:
+  - `dotnet run --project src/McpMemoryManager.Server -- --tcp 8765`
+
+- WebSocket on 0.0.0.0:8080:
+  - `dotnet run --project src/McpMemoryManager.Server -- --ws 0.0.0.0:8080`
+
+## Protocol Notes
+
+- Top-level JSON-RPC methods (no `tools/call`):
+  - `initialize`
+  - `tools/list`
+  - `resources/list`
+  - `resources/read`
+
+- Tools are invoked via `tools/call` with `{ name, arguments }`.
+
+- Stdio/TCP framing (requests and responses):
+  - `Content-Length: <bytes>`
+  - `Content-Type: application/json`
+  - blank line
+  - JSON body (UTF-8)
+
+- WebSocket framing:
+  - One JSON-RPC message per text frame.
+
+## Quick Test
+
+- Create a note via TCP:
+
+  1) Start: `dotnet run --project src/McpMemoryManager.Server -- --tcp 127.0.0.1:8765`
+  2) Connect and send frames (example payloads):
+     - `{"jsonrpc":"2.0","id":1,"method":"initialize"}`
+     - `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`
+     - `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory.create","arguments":{"content":"hello","ns":"default"}}}`
+
+## Notes
+
+- The server exposes tools for memory and task management (create/get/list/search/update/delete, tags/refs, archive/pin, summarize/merge, export/import) and basic resources endpoints for MCP.
+- For WebSocket clients, connect to `/ws`; for stdio/TCP clients use JSON-RPC framing described above.
