@@ -95,70 +95,7 @@ public static class ToolHost
                 try
                 {
                     using var doc = JsonDocument.Parse(json);
-                    var root = doc.RootElement;
-                    var hasId = root.TryGetProperty("id", out var idEl);
-                    var id = hasId ? idEl.Clone() : default;
-                    var method = root.GetProperty("method").GetString();
-
-                    object payload;
-                    switch (method)
-                    {
-                        case "initialize":
-                            payload = new { jsonrpc = "2.0", id, result = new { protocolVersion = "2024-11-05", server = new { name = "mcp-memory-manager", version = "0.1.0" }, capabilities = new { tools = new { } } } };
-                            break;
-                        case "tools/list":
-                            var tools = GetTools();
-                            payload = new { jsonrpc = "2.0", id, result = new { tools } };
-                            break;
-                        case "resources/list":
-                        {
-                            var p = root.TryGetProperty("params", out var p2) ? p2 : default;
-                            var (items, next) = await memory.ListAdvancedAsync(
-                                ns: GetString(p, "ns"),
-                                types: GetStringArray(p, "types"),
-                                tags: GetStringArray(p, "tags"),
-                                pinned: GetBool(p, "pinned"),
-                                archived: GetBool(p, "archived"),
-                                before: GetDateTimeOffset(p, "before"),
-                                after: GetDateTimeOffset(p, "after"),
-                                limit: GetInt(p, "limit") ?? 50,
-                                cursor: GetString(p, "cursor")
-                            );
-                            var resources = items.Select(i => new { uri = $"mem://{i.Namespace}/{i.Id}", name = i.Title ?? (i.Content.Length > 30 ? i.Content[..30] + "…" : i.Content), description = i.Type, mimeType = "text/plain" }).ToArray();
-                            payload = new { jsonrpc = "2.0", id, result = new { resources, nextCursor = next } };
-                            break;
-                        }
-                        case "resources/read":
-                        {
-                            var p = root.GetProperty("params");
-                            var uri = p.GetProperty("uri").GetString()!;
-                            var format = GetString(p, "format") ?? "text";
-                            if (!uri.StartsWith("mem://")) { payload = new { jsonrpc = "2.0", id, error = new { code = -32602, message = "Unsupported URI" } }; break; }
-                            var path = uri.Substring("mem://".Length);
-                            var idx = path.IndexOf('/');
-                            if (idx <= 0) { payload = new { jsonrpc = "2.0", id, error = new { code = -32602, message = "Invalid URI" } }; break; }
-                            var ns = path.Substring(0, idx);
-                            var idPart = path.Substring(idx + 1);
-                            var item = await memory.GetAsync(idPart);
-                            if (item is null || item.Namespace != ns) { payload = new { jsonrpc = "2.0", id, error = new { code = -32004, message = "Not found" } }; break; }
-                            object contentObj = format.Equals("json", StringComparison.OrdinalIgnoreCase) ? new { uri, mimeType = "application/json", text = JsonSerializer.Serialize(item) } : new { uri, mimeType = "text/plain", text = item.Content };
-                            payload = new { jsonrpc = "2.0", id, result = new { contents = new[] { contentObj } } };
-                            break;
-                        }
-                        case "tools/call":
-                        {
-                            var p = root.GetProperty("params");
-                            var name = p.GetProperty("name").GetString()!;
-                            var a = p.TryGetProperty("arguments", out var a2) ? a2 : default;
-                            var result = await CallToolAsync(name, a, memory, tasks);
-                            payload = new { jsonrpc = "2.0", id, result = new { content = result } };
-                            break;
-                        }
-                        default:
-                            payload = new { jsonrpc = "2.0", id, error = new { code = -32601, message = $"Method not found: {method}" } };
-                            break;
-                    }
-
+                    var payload = await BuildResponseAsync(doc.RootElement, memory, tasks);
                     var outJson = JsonSerializer.Serialize(payload);
                     var outBytes = Encoding.UTF8.GetBytes(outJson);
                     await ws.SendAsync(new ArraySegment<byte>(outBytes), WebSocketMessageType.Text, true, cancel);
@@ -186,108 +123,218 @@ public static class ToolHost
             try
             {
                 using var doc = JsonDocument.Parse(reqBytes);
-                var root = doc.RootElement;
-                var hasId = root.TryGetProperty("id", out var idEl);
-                var id = hasId ? idEl.Clone() : default;
-                var method = root.GetProperty("method").GetString();
-
-                switch (method)
-                {
-                    case "initialize":
-                        await WriteFramedAsync(output, new
-                        {
-                            jsonrpc = "2.0",
-                            id,
-                            result = new
-                            {
-                                protocolVersion = "2024-11-05",
-                                server = new { name = "mcp-memory-manager", version = "0.1.0" },
-                                capabilities = new { tools = new { } }
-                            }
-                        }, cancel);
-                        break;
-
-                    case "tools/list":
-                        await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { tools } }, cancel);
-                        break;
-
-                    case "resources/list":
-                    {
-                        var @params = root.TryGetProperty("params", out var p) ? p : default;
-                        var (items, next) = await memory.ListAdvancedAsync(
-                            ns: GetString(@params, "ns"),
-                            types: GetStringArray(@params, "types"),
-                            tags: GetStringArray(@params, "tags"),
-                            pinned: GetBool(@params, "pinned"),
-                            archived: GetBool(@params, "archived"),
-                            before: GetDateTimeOffset(@params, "before"),
-                            after: GetDateTimeOffset(@params, "after"),
-                            limit: GetInt(@params, "limit") ?? 50,
-                            cursor: GetString(@params, "cursor")
-                        );
-                        var resources = items.Select(i => new
-                        {
-                            uri = $"mem://{i.Namespace}/{i.Id}",
-                            name = i.Title ?? (i.Content.Length > 30 ? i.Content[..30] + "…" : i.Content),
-                            description = i.Type,
-                            mimeType = "text/plain"
-                        }).ToArray();
-                        await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { resources, nextCursor = next } }, cancel);
-                        break;
-                    }
-
-                    case "resources/read":
-                    {
-                        var @params = root.GetProperty("params");
-                        var uri = @params.GetProperty("uri").GetString()!;
-                        var format = GetString(@params, "format") ?? "text";
-                        if (!uri.StartsWith("mem://"))
-                        {
-                            await WriteFramedAsync(output, new { jsonrpc = "2.0", id, error = new { code = -32602, message = "Unsupported URI" } }, cancel);
-                            break;
-                        }
-                        var path = uri.Substring("mem://".Length);
-                        var idx = path.IndexOf('/');
-                        if (idx <= 0)
-                        {
-                            await WriteFramedAsync(output, new { jsonrpc = "2.0", id, error = new { code = -32602, message = "Invalid URI" } }, cancel);
-                            break;
-                        }
-                        var ns = path.Substring(0, idx);
-                        var idPart = path.Substring(idx + 1);
-                        var item = await memory.GetAsync(idPart);
-                        if (item is null || item.Namespace != ns)
-                        {
-                            await WriteFramedAsync(output, new { jsonrpc = "2.0", id, error = new { code = -32004, message = "Not found" } }, cancel);
-                            break;
-                        }
-                        object contentObj = format.Equals("json", StringComparison.OrdinalIgnoreCase)
-                            ? new { uri, mimeType = "application/json", text = JsonSerializer.Serialize(item) }
-                            : new { uri, mimeType = "text/plain", text = item.Content };
-                        var contents = new[] { contentObj };
-                        await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { contents } }, cancel);
-                        break;
-                    }
-
-                    case "tools/call":
-                    {
-                        var @params = root.GetProperty("params");
-                        var name = @params.GetProperty("name").GetString()!;
-                        var args = @params.TryGetProperty("arguments", out var a) ? a : default;
-                        var result = await CallToolAsync(name, args, memory, tasks);
-                        await WriteFramedAsync(output, new { jsonrpc = "2.0", id, result = new { content = result } }, cancel);
-                        break;
-                    }
-
-                    default:
-                        await WriteFramedAsync(output, new { jsonrpc = "2.0", id, error = new { code = -32601, message = $"Method not found: {method}" } }, cancel);
-                        break;
-                }
+                var payload = await BuildResponseAsync(doc.RootElement, memory, tasks);
+                await WriteFramedAsync(output, payload, cancel);
             }
             catch (Exception ex)
             {
                 await WriteFramedAsync(output, new { jsonrpc = "2.0", id = (JsonElement?)null, error = new { code = -32603, message = ex.Message } }, cancel);
             }
+        }
+    }
+
+    public static async Task RunHttpAsync(MemoryApi memory, TaskApi tasks, string endpoint, CancellationToken cancel = default)
+    {
+        string url = endpoint.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? endpoint : $"http://{endpoint}";
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+        {
+            Args = Array.Empty<string>(),
+            ApplicationName = typeof(ToolHost).Assembly.FullName,
+            ContentRootPath = AppContext.BaseDirectory,
+            WebRootPath = AppContext.BaseDirectory,
+            EnvironmentName = Environments.Production,
+        });
+        builder.WebHost.UseUrls(url);
+        var app = builder.Build();
+
+        // Simple SSE endpoint with keep-alives
+        app.MapGet("/sse", async context =>
+        {
+            context.Response.Headers["Cache-Control"] = "no-cache";
+            context.Response.Headers["Connection"] = "keep-alive";
+            context.Response.Headers["Content-Type"] = "text/event-stream";
+            await context.Response.Body.FlushAsync();
+            var aborted = context.RequestAborted;
+            // Periodic keep-alive comments
+            while (!aborted.IsCancellationRequested)
+            {
+                await context.Response.WriteAsync(": keep-alive\n\n");
+                await context.Response.Body.FlushAsync();
+                try { await Task.Delay(TimeSpan.FromSeconds(15), aborted); }
+                catch { break; }
+            }
+        });
+
+        // JSON-RPC over HTTP POST
+        var handlePost = async (HttpContext ctx) =>
+        {
+            try
+            {
+                var method0 = ctx.Request.Method;
+                var path0 = ctx.Request.Path.ToString();
+                var ct0 = ctx.Request.ContentType ?? string.Empty;
+                var enc0 = ctx.Request.Headers.TryGetValue("Content-Encoding", out var encHdr) ? encHdr.ToString() : string.Empty;
+                var cl0 = ctx.Request.Headers.TryGetValue("Content-Length", out var clHdr) ? clHdr.ToString() : string.Empty;
+                await Console.Error.WriteLineAsync($"[HTTP] {method0} {path0} CT={ct0} CE={enc0} CL={cl0}");
+
+                string body;
+                // Handle optional compression
+                if (ctx.Request.Headers.TryGetValue("Content-Encoding", out var enc) && enc.Count > 0)
+                {
+                    var val = enc.ToString().ToLowerInvariant();
+                    if (val.Contains("gzip"))
+                    {
+                        using var gz = new System.IO.Compression.GZipStream(ctx.Request.Body, System.IO.Compression.CompressionMode.Decompress, leaveOpen: true);
+                        using var sr = new StreamReader(gz, Encoding.UTF8);
+                        body = await sr.ReadToEndAsync();
+                    }
+                    else if (val.Contains("deflate"))
+                    {
+                        using var df = new System.IO.Compression.DeflateStream(ctx.Request.Body, System.IO.Compression.CompressionMode.Decompress, leaveOpen: true);
+                        using var sr = new StreamReader(df, Encoding.UTF8);
+                        body = await sr.ReadToEndAsync();
+                    }
+                    else
+                    {
+                        using var sr = new StreamReader(ctx.Request.Body, Encoding.UTF8);
+                        body = await sr.ReadToEndAsync();
+                    }
+                }
+                else
+                {
+                    using var sr = new StreamReader(ctx.Request.Body, Encoding.UTF8);
+                    body = await sr.ReadToEndAsync();
+                }
+
+                if (string.IsNullOrWhiteSpace(body))
+                {
+                    var bad = new { jsonrpc = "2.0", id = (JsonElement?)null, error = new { code = -32600, message = "Empty request body" } };
+                    await Console.Error.WriteLineAsync("[HTTP] Empty body");
+                    return Results.Json(bad, statusCode: 200);
+                }
+
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
+                string? rpcMethod = null;
+                try { rpcMethod = root.GetProperty("method").GetString(); } catch { }
+                string? rpcId = null;
+                if (root.TryGetProperty("id", out var idEl)) rpcId = idEl.ValueKind == JsonValueKind.String ? idEl.GetString() : idEl.GetRawText();
+                await Console.Error.WriteLineAsync($"[MCP] method={rpcMethod ?? "<none>"} id={rpcId ?? "<none>"} bodyChars={body.Length}");
+
+                var payload = await BuildResponseAsync(root, memory, tasks);
+                return Results.Json(payload);
+            }
+            catch (Exception ex)
+            {
+                await Console.Error.WriteLineAsync($"[HTTP ERROR] {ex.Message}");
+                var err = new { jsonrpc = "2.0", id = (JsonElement?)null, error = new { code = -32603, message = ex.Message } };
+                return Results.Json(err, statusCode: 200);
+            }
+        };
+        app.MapPost("/mcp", handlePost);
+        app.MapPost("/", handlePost);
+        app.MapPost("{*path}", handlePost); // Fallback: accept POST at any path for JSON-RPC
+
+        app.MapGet("/", () => Results.Ok("mcp-memory-manager http endpoint: POST /mcp, SSE /sse"));
+        await app.RunAsync(cancel);
+    }
+
+    private static async Task<object> BuildResponseAsync(JsonElement root, MemoryApi memory, TaskApi tasks)
+    {
+        var hasId = root.TryGetProperty("id", out var idEl);
+        object? id = hasId ? DecodeId(idEl) : null;
+        var method = root.GetProperty("method").GetString();
+
+        switch (method)
+        {
+            case "initialize":
+                return new
+                {
+                    jsonrpc = "2.0",
+                    id,
+                    result = new
+                    {
+                        protocolVersion = "2024-11-05",
+                        serverInfo = new { name = "mcp-memory-manager", version = "0.1.0" },
+                        capabilities = new { tools = new { } }
+                    }
+                };
+
+            case "tools/list":
+                return new { jsonrpc = "2.0", id, result = new { tools = GetTools() } };
+
+            case "resources/list":
+            {
+                var p = root.TryGetProperty("params", out var p2) ? p2 : default;
+                var (items, next) = await memory.ListAdvancedAsync(
+                    ns: GetString(p, "ns"),
+                    types: GetStringArray(p, "types"),
+                    tags: GetStringArray(p, "tags"),
+                    pinned: GetBool(p, "pinned"),
+                    archived: GetBool(p, "archived"),
+                    before: GetDateTimeOffset(p, "before"),
+                    after: GetDateTimeOffset(p, "after"),
+                    limit: GetInt(p, "limit") ?? 50,
+                    cursor: GetString(p, "cursor")
+                );
+                var resources = items.Select(i => new
+                {
+                    uri = $"mem://{i.Namespace}/{i.Id}",
+                    name = i.Title ?? (i.Content.Length > 30 ? i.Content[..30] + "…" : i.Content),
+                    description = i.Type,
+                    mimeType = "text/plain"
+                }).ToArray();
+                return new { jsonrpc = "2.0", id, result = new { resources, nextCursor = next } };
+            }
+
+            case "resources/read":
+            {
+                var p = root.GetProperty("params");
+                var uri = p.GetProperty("uri").GetString()!;
+                var format = GetString(p, "format") ?? "text";
+                if (!uri.StartsWith("mem://")) return new { jsonrpc = "2.0", id, error = new { code = -32602, message = "Unsupported URI" } };
+                var path = uri.Substring("mem://".Length);
+                var idx = path.IndexOf('/');
+                if (idx <= 0) return new { jsonrpc = "2.0", id, error = new { code = -32602, message = "Invalid URI" } };
+                var ns = path.Substring(0, idx);
+                var idPart = path.Substring(idx + 1);
+                var item = await memory.GetAsync(idPart);
+                if (item is null || item.Namespace != ns) return new { jsonrpc = "2.0", id, error = new { code = -32004, message = "Not found" } };
+                object contentObj = format.Equals("json", StringComparison.OrdinalIgnoreCase)
+                    ? new { uri, mimeType = "application/json", text = JsonSerializer.Serialize(item) }
+                    : new { uri, mimeType = "text/plain", text = item.Content };
+                return new { jsonrpc = "2.0", id, result = new { contents = new[] { contentObj } } };
+            }
+
+            case "tools/call":
+            {
+                var p = root.GetProperty("params");
+                var name = p.GetProperty("name").GetString()!;
+                var a = p.TryGetProperty("arguments", out var a2) ? a2 : default;
+                var result = await CallToolAsync(name, a, memory, tasks);
+                return new { jsonrpc = "2.0", id, result = new { content = result } };
+            }
+
+            default:
+                return new { jsonrpc = "2.0", id, error = new { code = -32601, message = $"Method not found: {method}" } };
+        }
+    }
+
+    private static object? DecodeId(JsonElement idEl)
+    {
+        switch (idEl.ValueKind)
+        {
+            case JsonValueKind.String:
+                return idEl.GetString();
+            case JsonValueKind.Number:
+                if (idEl.TryGetInt64(out var l)) return l;
+                if (idEl.TryGetDouble(out var d)) return d;
+                return JsonSerializer.Deserialize<object>(idEl.GetRawText());
+            case JsonValueKind.Null:
+                return null;
+            default:
+                // JSON-RPC IDs should not be arrays/objects/bools; return raw text for visibility
+                return JsonSerializer.Deserialize<object>(idEl.GetRawText());
         }
     }
 

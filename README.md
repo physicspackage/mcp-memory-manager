@@ -36,6 +36,11 @@ An **MCP (Model Context Protocol) server** for AI agents to store and manage **m
   - Binds HTTP server at the URL (defaults to `http://<HOST:PORT>` if scheme omitted).
   - WebSocket endpoint path: `/ws` (connect to `ws://127.0.0.1:8080/ws`).
 
+- MCP over HTTP/SSE: `--http <URL>` or `--http <HOST:PORT>`
+  - `dotnet run --project src/McpMemoryManager.Server -- --http 127.0.0.1:8765`
+  - POST endpoint: `/mcp` (JSON-RPC request/response)
+  - SSE endpoint: `/sse` (keep-alives / future events)
+
 - Database location: `--db <PATH>`
   - Stores the SQLite database at the given path.
   - Example: `--db C:\\data\\mcp-memory.db`
@@ -70,6 +75,36 @@ Examples
 
 - WebSocket framing:
   - One JSON-RPC message per text frame.
+
+## MCP Client Config Examples
+
+Most MCP clients support `stdio`, `websocket`, or `http` transports. This server supports all three. Use one of the following:
+
+- Stdio (recommended for local):
+  - Start command is launched by the client; example config snippet:
+    - For Windows:
+      - `type`: `"stdio"`
+      - `command`: `"dotnet"`
+      - `args`: `[ "run", "--project", "src/McpMemoryManager.Server", "--", "--mcp" ]`
+
+- WebSocket:
+  - Start the server yourself:
+    - `dotnet run --project src/McpMemoryManager.Server -- --ws 127.0.0.1:8080`
+  - Point the client to the WS endpoint:
+    - `type`: `"websocket"`
+    - `url`: `"ws://127.0.0.1:8080/ws"`
+
+- HTTP + SSE:
+  - Start the server:
+    - `dotnet run --project src/McpMemoryManager.Server -- --http 127.0.0.1:8765`
+  - Endpoints:
+    - POST `http://127.0.0.1:8765/mcp` — JSON-RPC request/response
+    - GET  `http://127.0.0.1:8765/sse` — Server-Sent Events (keep-alives)
+  - Client config:
+    - `type`: `"http"`
+    - `url`: `"http://127.0.0.1:8765/mcp"`
+
+Note: The `--tcp` option exists for ad‑hoc testing, but many MCP clients do not support raw TCP.
 
 ## Quick Test
 

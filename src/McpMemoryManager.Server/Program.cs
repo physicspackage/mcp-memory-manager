@@ -29,12 +29,24 @@ if (wsIdx >= 0)
     wsEndpoint = wsIdx + 1 < argv.Length ? argv[wsIdx + 1] : "http://127.0.0.1:8080";
 }
 
-if (mcpMode || tcpEndpoint != null || wsEndpoint != null)
+var httpIdx = Array.FindIndex(argv, a => a.Equals("--http", StringComparison.OrdinalIgnoreCase));
+string? httpEndpoint = null;
+if (httpIdx >= 0)
+{
+    httpEndpoint = httpIdx + 1 < argv.Length ? argv[httpIdx + 1] : "http://127.0.0.1:8765";
+}
+
+if (mcpMode || tcpEndpoint != null || wsEndpoint != null || httpEndpoint != null)
 {
     if (tcpEndpoint != null)
     {
         Console.Error.WriteLine($"[MCP Memory Manager] Starting TCP server on {tcpEndpoint}");
         await ToolHost.RunTcpAsync(memory, tasks, tcpEndpoint);
+    }
+    else if (httpEndpoint != null)
+    {
+        Console.Error.WriteLine($"[MCP Memory Manager] Starting HTTP server at {httpEndpoint}");
+        await ToolHost.RunHttpAsync(memory, tasks, httpEndpoint);
     }
     else if (wsEndpoint != null)
     {
