@@ -230,8 +230,51 @@ public sealed class SqliteStore
     ORDER BY m.updated_at DESC
     LIMIT @limit;";
 
-        var rows = await conn.QueryAsync<dynamic>(sql, new { q = query, ns, limit });
-        return rows.Select(r => new ScoredMemoryItem(Map(r), (double)r.score)).ToList();
+        try
+        {
+            var rows = await conn.QueryAsync<dynamic>(sql, new { q = query, ns, limit });
+            return rows.Select(r => new ScoredMemoryItem(Map(r), (double)r.score)).ToList();
+        }
+        catch (SqliteException)
+        {
+            // Fallback: sanitize query to avoid FTS5 parse errors (e.g., apostrophes)
+            var safe = BuildSafeFtsQuery(query);
+            if (string.IsNullOrWhiteSpace(safe)) return new List<ScoredMemoryItem>();
+            var rows = await conn.QueryAsync<dynamic>(sql, new { q = safe, ns, limit });
+            return rows.Select(r => new ScoredMemoryItem(Map(r), (double)r.score)).ToList();
+        }
+    }
+
+    private static string BuildSafeFtsQuery(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return string.Empty;
+        var sb = new StringBuilder();
+        int words = 0;
+        void AppendToken(ReadOnlySpan<char> span)
+        {
+            if (span.Length == 0) return;
+            // Quote token for exact term; escape embedded quotes
+            var token = span.ToString().Replace("\"", "\"\"");
+            if (token.Length == 0) return;
+            if (sb.Length > 0) sb.Append(' '); // AND between tokens
+            sb.Append('"').Append(token).Append('"');
+        }
+
+        int i = 0; int n = input.Length;
+        while (i < n && words < 16) // limit tokens
+        {
+            // skip non-word chars
+            while (i < n && !char.IsLetterOrDigit(input[i])) i++;
+            int start = i;
+            while (i < n && (char.IsLetterOrDigit(input[i]) || input[i] == '_' )) i++;
+            int len = i - start;
+            if (len > 0)
+            {
+                AppendToken(input.AsSpan(start, len));
+                words++;
+            }
+        }
+        return sb.ToString();
     }
 
     public async Task<int> CleanupExpireAsync(string? ns = null)

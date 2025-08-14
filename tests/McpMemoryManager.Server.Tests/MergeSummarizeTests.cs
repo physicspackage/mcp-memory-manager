@@ -55,17 +55,46 @@ public class MergeSummarizeTests
                                         .First(l => l.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase));
                 var len = int.Parse(lenLine.Substring("Content-Length:".Length).Trim());
                 var body = br.ReadBytes(len);
-                using var doc = JsonDocument.Parse(body);
-                results.Add(doc.RootElement.Clone());
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in root.EnumerateArray()) results.Add(el.Clone());
+            }
+            else
+            {
+                results.Add(root.Clone());
+            }
             }
             return results.ToArray();
+        }
+
+        JsonElement ExtractJsonPart(JsonElement resultContent)
+        {
+            JsonElement part = resultContent;
+            if (resultContent.ValueKind == JsonValueKind.Array)
+            {
+                try { part = resultContent.EnumerateArray().First(); }
+                catch { /* fallback to original element */ }
+            }
+            if (part.ValueKind == JsonValueKind.Object)
+            {
+                if (part.TryGetProperty("json", out var jsonEl))
+                    return jsonEl;
+                if (part.TryGetProperty("text", out var textEl) && textEl.ValueKind == JsonValueKind.String)
+                {
+                    using var doc = JsonDocument.Parse(textEl.GetString()!);
+                    return doc.RootElement.Clone();
+                }
+            }
+            return part;
         }
 
         var mergeMsg = new { jsonrpc = "2.0", id = 1, method = "tools/call", @params = new { name = "memory.merge", arguments = new { source_ids = new[] { a, b }, target_title = "merged" } } };
         var sumMsg = new { jsonrpc = "2.0", id = 2, method = "tools/call", @params = new { name = "memory.summarize_thread", arguments = new { source_ids = new[] { a, b }, style = "brief" } } };
         var res = RunBatch(mergeMsg, sumMsg);
-        var mergedId = res[0].GetProperty("result").GetProperty("content").GetProperty("id").GetString();
-        var sumId = res[1].GetProperty("result").GetProperty("content").GetProperty("id").GetString();
+        var mergedId = ExtractJsonPart(res[0].GetProperty("result").GetProperty("content")).GetProperty("id").GetString();
+        var sumId = ExtractJsonPart(res[1].GetProperty("result").GetProperty("content")).GetProperty("id").GetString();
         Assert.False(string.IsNullOrWhiteSpace(mergedId));
         Assert.False(string.IsNullOrWhiteSpace(sumId));
         var merged = await memory.GetAsync(mergedId!);
@@ -75,4 +104,3 @@ public class MergeSummarizeTests
         Assert.Equal("summary", summary!.Type);
     }
 }
-

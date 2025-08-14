@@ -7,6 +7,27 @@ namespace McpMemoryManager.Server.Tests;
 
 public class ToolHostTests
 {
+    private static JsonElement ExtractJsonPart(JsonElement resultContent)
+    {
+        // Normalize MCP tool content: array of parts or legacy object
+        JsonElement part = resultContent;
+        if (resultContent.ValueKind == JsonValueKind.Array)
+        {
+            part = resultContent.EnumerateArray().First();
+        }
+        if (part.ValueKind == JsonValueKind.Object)
+        {
+            if (part.TryGetProperty("json", out var jsonEl))
+                return jsonEl;
+            if (part.TryGetProperty("text", out var textEl) && textEl.ValueKind == JsonValueKind.String)
+            {
+                using var doc = JsonDocument.Parse(textEl.GetString()!);
+                return doc.RootElement.Clone();
+            }
+        }
+        // Legacy shape: content is already the JSON object
+        return part;
+    }
     private static byte[] Frame(object payload)
     {
         var json = JsonSerializer.Serialize(payload);
@@ -42,7 +63,15 @@ public class ToolHostTests
             var len = int.Parse(lenLine.Substring("Content-Length:".Length).Trim());
             var body = reader.ReadBytes(len);
             using var doc = JsonDocument.Parse(body);
-            list.Add(doc.RootElement.Clone());
+            var root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in root.EnumerateArray()) list.Add(el.Clone());
+            }
+            else
+            {
+                list.Add(root.Clone());
+            }
         }
         return list;
     }
@@ -81,11 +110,11 @@ public class ToolHostTests
         Assert.Contains("memory.create", tools);
 
         // Check create result returns id
-        var id = responses[2].GetProperty("result").GetProperty("content").GetProperty("id").GetString();
+        var contentEl = responses[2].GetProperty("result").GetProperty("content");
+        var id = ExtractJsonPart(contentEl).GetProperty("id").GetString();
         Assert.False(string.IsNullOrWhiteSpace(id));
         var item = await memory.GetAsync(id!);
         Assert.NotNull(item);
         Assert.Equal("hello", item!.Content);
     }
 }
-

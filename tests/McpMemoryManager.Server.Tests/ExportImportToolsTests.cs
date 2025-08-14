@@ -7,6 +7,23 @@ namespace McpMemoryManager.Server.Tests;
 
 public class ExportImportToolsTests
 {
+    private static JsonElement ExtractJsonPart(JsonElement resultContent)
+    {
+        JsonElement part = resultContent;
+        if (resultContent.ValueKind == JsonValueKind.Array)
+            part = resultContent.EnumerateArray().First();
+        if (part.ValueKind == JsonValueKind.Object)
+        {
+            if (part.TryGetProperty("json", out var jsonEl))
+                return jsonEl;
+            if (part.TryGetProperty("text", out var textEl) && textEl.ValueKind == JsonValueKind.String)
+            {
+                using var doc = JsonDocument.Parse(textEl.GetString()!);
+                return doc.RootElement.Clone();
+            }
+        }
+        return part;
+    }
     private static byte[] Frame(object payload)
     {
         var json = JsonSerializer.Serialize(payload);
@@ -47,7 +64,15 @@ public class ExportImportToolsTests
             var len = int.Parse(lenLine.Substring("Content-Length:".Length).Trim());
             var body = br.ReadBytes(len);
             using var doc = JsonDocument.Parse(body);
-            results.Add(doc.RootElement.Clone());
+            var root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in root.EnumerateArray()) results.Add(el.Clone());
+            }
+            else
+            {
+                results.Add(root.Clone());
+            }
         }
         return results.ToArray();
     }
@@ -63,8 +88,10 @@ public class ExportImportToolsTests
         var create = new { jsonrpc = "2.0", id = 1, method = "tools/call", @params = new { name = "memory.create", arguments = new { content = "exp", ns = "Z" } } };
         var dump = new { jsonrpc = "2.0", id = 2, method = "tools/call", @params = new { name = "export.dump", arguments = new { ns = "Z" } } };
         var res = RunBatch(memory1, tasks1, create, dump);
-        var createdId = res[0].GetProperty("result").GetProperty("content").GetProperty("id").GetString();
-        var ndjson = res[1].GetProperty("result").GetProperty("content").GetProperty("ndjson").GetString();
+        var content0 = res[0].GetProperty("result").GetProperty("content");
+        var createdId = ExtractJsonPart(content0).GetProperty("id").GetString();
+        var content1 = res[1].GetProperty("result").GetProperty("content");
+        var ndjson = ExtractJsonPart(content1).GetProperty("ndjson").GetString();
         Assert.False(string.IsNullOrEmpty(createdId));
         Assert.Contains(createdId, ndjson);
 
@@ -75,10 +102,11 @@ public class ExportImportToolsTests
         var importMsg = new { jsonrpc = "2.0", id = 3, method = "tools/call", @params = new { name = "export.import", arguments = new { ndjson } } };
         var getMsg = new { jsonrpc = "2.0", id = 4, method = "tools/call", @params = new { name = "memory.get", arguments = new { id = createdId } } };
         var res2 = RunBatch(memory2, tasks2, importMsg, getMsg);
-        var ok = res2[0].GetProperty("result").GetProperty("content").GetProperty("upserted").GetInt32();
+        var content2 = res2[0].GetProperty("result").GetProperty("content");
+        var ok = ExtractJsonPart(content2).GetProperty("upserted").GetInt32();
         Assert.True(ok >= 1);
-        var item = res2[1].GetProperty("result").GetProperty("content").GetProperty("item");
+        var content3 = res2[1].GetProperty("result").GetProperty("content");
+        var item = ExtractJsonPart(content3).GetProperty("item");
         Assert.Equal("exp", item.GetProperty("Content").GetString());
     }
 }
-

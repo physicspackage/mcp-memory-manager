@@ -102,22 +102,7 @@ public static class ToolHost
                 }
                 catch (Exception ex)
                 {
-                    object? reqId = null;
-                    try
-                    {
-                        using var d2 = JsonDocument.Parse(json);
-                        if (d2.RootElement.TryGetProperty("id", out var idEl))
-                        {
-                            if (idEl.ValueKind == JsonValueKind.String) reqId = idEl.GetString();
-                            else if (idEl.ValueKind == JsonValueKind.Number)
-                            {
-                                if (idEl.TryGetInt64(out var l)) reqId = l;
-                                else if (idEl.TryGetDouble(out var dd)) reqId = dd;
-                            }
-                        }
-                    }
-                    catch { }
-                    var err = JsonSerializer.Serialize(new { jsonrpc = "2.0", id = reqId, error = new { code = -32603, message = ex.Message } });
+                    var err = JsonSerializer.Serialize(new { jsonrpc = "2.0", id = (JsonElement?)null, error = new { code = -32603, message = ex.Message } });
                     var outBytes = Encoding.UTF8.GetBytes(err);
                     await ws.SendAsync(new ArraySegment<byte>(outBytes), WebSocketMessageType.Text, true, cancel);
                 }
@@ -138,27 +123,12 @@ public static class ToolHost
             try
             {
                 using var doc = JsonDocument.Parse(reqBytes);
-                var payload = await BuildResponseAsync(doc.RootElement, memory, tasks, compat: true);
+                var payload = await BuildResponseAsync(doc.RootElement, memory, tasks);
                 await WriteFramedAsync(output, payload, cancel);
             }
             catch (Exception ex)
             {
-                object? reqId = null;
-                try
-                {
-                    using var d2 = JsonDocument.Parse(reqBytes);
-                    if (d2.RootElement.TryGetProperty("id", out var idEl))
-                    {
-                        if (idEl.ValueKind == JsonValueKind.String) reqId = idEl.GetString();
-                        else if (idEl.ValueKind == JsonValueKind.Number)
-                        {
-                            if (idEl.TryGetInt64(out var l)) reqId = l;
-                            else if (idEl.TryGetDouble(out var dd)) reqId = dd;
-                        }
-                    }
-                }
-                catch { }
-                await WriteFramedAsync(output, new { jsonrpc = "2.0", id = reqId, error = new { code = -32603, message = ex.Message } }, cancel);
+                await WriteFramedAsync(output, new { jsonrpc = "2.0", id = (JsonElement?)null, error = new { code = -32603, message = ex.Message } }, cancel);
             }
         }
     }
@@ -251,31 +221,8 @@ public static class ToolHost
                 if (root.TryGetProperty("id", out var idEl)) rpcId = idEl.ValueKind == JsonValueKind.String ? idEl.GetString() : idEl.GetRawText();
                 await Console.Error.WriteLineAsync($"[MCP] method={rpcMethod ?? "<none>"} id={rpcId ?? "<none>"} bodyChars={body.Length}");
 
-                // BuildResponseAsync moved into try/catch to preserve id on errors
-                try
-                {
-                    var payload = await BuildResponseAsync(root, memory, tasks);
-                    return Results.Json(payload);
-                }
-                catch (Exception ex)
-                {
-                    object? reqId = null;
-                    try
-                    {
-                        if (root.TryGetProperty("id", out var id2))
-                        {
-                            if (id2.ValueKind == JsonValueKind.String) reqId = id2.GetString();
-                            else if (id2.ValueKind == JsonValueKind.Number)
-                            {
-                                if (id2.TryGetInt64(out var l)) reqId = l;
-                                else if (id2.TryGetDouble(out var d)) reqId = d;
-                            }
-                        }
-                    }
-                    catch { }
-                    var err = new { jsonrpc = "2.0", id = reqId, error = new { code = -32603, message = ex.Message } };
-                    return Results.Json(err, statusCode: 200);
-                }
+                var payload = await BuildResponseAsync(root, memory, tasks);
+                return Results.Json(payload);
             }
             catch (Exception ex)
             {
@@ -292,7 +239,7 @@ public static class ToolHost
         await app.RunAsync(cancel);
     }
 
-    private static async Task<object> BuildResponseAsync(JsonElement root, MemoryApi memory, TaskApi tasks, bool compat = false)
+    private static async Task<object> BuildResponseAsync(JsonElement root, MemoryApi memory, TaskApi tasks)
     {
         var hasId = root.TryGetProperty("id", out var idEl);
         object? id = hasId ? DecodeId(idEl) : null;
@@ -308,7 +255,6 @@ public static class ToolHost
                     result = new
                     {
                         protocolVersion = "2024-11-05",
-                        server = new { name = "mcp-memory-manager", version = "0.1.0" },
                         serverInfo = new { name = "mcp-memory-manager", version = "0.1.0" },
                         capabilities = new { tools = new { } }
                     }
@@ -365,37 +311,8 @@ public static class ToolHost
                 var p = root.GetProperty("params");
                 var name = p.GetProperty("name").GetString()!;
                 var a = p.TryGetProperty("arguments", out var a2) ? a2 : default;
-                object result;
-                try
-                {
-                    result = await CallToolAsync(name, a, memory, tasks);
-                }
-                catch (Exception ex)
-                {
-                    if (compat)
-                    {
-                        return new { jsonrpc = "2.0", id, error = new { code = -32000, message = ex.Message } };
-                    }
-                    else
-                    {
-                        // Surface tool errors as MCP content with isError=true
-                        var errPart = new { type = "text", text = ex.Message, isError = true };
-                        return new { jsonrpc = "2.0", id, result = new { content = new object[] { errPart } } };
-                    }
-                }
-
-                if (compat)
-                {
-                    // Legacy shape expected by internal tests: result.content is an object
-                    return new { jsonrpc = "2.0", id, result = new { content = result } };
-                }
-                else
-                {
-                    // MCP-compliant: Return a text content part containing serialized JSON
-                    var jsonText = JsonSerializer.Serialize(result);
-                    var content = new object[] { new { type = "text", text = jsonText } };
-                    return new { jsonrpc = "2.0", id, result = new { content } };
-                }
+                var result = await CallToolAsync(name, a, memory, tasks);
+                return new { jsonrpc = "2.0", id, result = new { content = result } };
             }
 
             default:
@@ -673,15 +590,6 @@ public static class ToolHost
     private static async Task WriteFramedAsync(Stream output, object payload, CancellationToken cancel)
     {
         var json = JsonSerializer.Serialize(payload);
-        // Debug dump to help diagnose framing during tests
-        try
-        {
-            var dir = Path.Combine(AppContext.BaseDirectory, "TestResults");
-            Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, "out.jsonl");
-            await File.AppendAllTextAsync(path, json + "\n", cancel);
-        }
-        catch { }
         var bytes = Encoding.UTF8.GetBytes(json);
         var header = Encoding.ASCII.GetBytes($"Content-Length: {bytes.Length}\r\nContent-Type: application/json\r\n\r\n");
         await output.WriteAsync(header, 0, header.Length, cancel);
