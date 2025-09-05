@@ -1,122 +1,131 @@
 # MCP Memory Manager
 
-An **MCP (Model Context Protocol) server** for AI agents to store and manage **memories** — tasks, notes, results, documents, and blobs — with lifecycle controls like cleanup, deduplication, and summarization.
+An MCP (Model Context Protocol) server for AI agents to store and manage memories — tasks, notes, results, and documents — with lifecycle controls like cleanup and summarization.
 
 ## Features
 
-- **CRUD for memories** (`memory.create/get/list/update/delete`)
-- **Full-text search** (SQLite FTS5)
-- **Task management** (`task.create/update/list`)
-- **Namespace & tagging** for isolation and filtering
-- **TTL & cleanup strategies**
-- **Blob storage** for attachments (planned)
-- **Export/import** for migration & backups (planned)
+- CRUD for memories: `memory.create/get/list/update/delete`
+- Full-text search via SQLite FTS5
+- Task management: `task.create/update_status/add_note/list`
+- Namespaces, tags, refs; pin/archive; TTL + cleanup
+- Export/import NDJSON: `export.dump` / `export.import`
+- Transports: stdio, TCP, WebSocket, HTTP+SSE
 
-## Project Layout
+## Prerequisites
 
+- .NET SDK `9.0` or later
+- Windows, macOS, or Linux (x64/ARM64)
+
+## Install & Build
+
+- Restore/build: `dotnet build`
+- Run tests (optional): `dotnet test`
 
 ## Run Options
 
-- Build once to restore and compile: `dotnet build`
-
-- CLI mode (default):
+- CLI REPL (local smoke-test):
   - `dotnet run --project src/McpMemoryManager.Server`
-  - Starts an interactive REPL to smoke-test create/list/search.
+  - Commands: `note <text>`, `list`, `search <query>`, `task <title>`, `tasks`
 
 - MCP over stdio: `--mcp`
   - `dotnet run --project src/McpMemoryManager.Server -- --mcp`
-  - Runs a minimal JSON-RPC 2.0 server over stdin/stdout using Content-Length framing.
+  - JSON-RPC 2.0 over stdin/stdout with Content-Length framing
 
 - MCP over TCP: `--tcp <HOST:PORT>` or `--tcp <PORT>`
   - `dotnet run --project src/McpMemoryManager.Server -- --tcp 127.0.0.1:8765`
-  - Frames: HTTP-like headers + JSON body (see Protocol Notes below).
 
 - MCP over WebSocket: `--ws <URL>` or `--ws <HOST:PORT>`
   - `dotnet run --project src/McpMemoryManager.Server -- --ws 127.0.0.1:8080`
-  - Binds HTTP server at the URL (defaults to `http://<HOST:PORT>` if scheme omitted).
-  - WebSocket endpoint path: `/ws` (connect to `ws://127.0.0.1:8080/ws`).
+  - WS endpoint path: `/ws` (e.g., `ws://127.0.0.1:8080/ws`)
 
-- MCP over HTTP/SSE: `--http <URL>` or `--http <HOST:PORT>`
+- MCP over HTTP + SSE: `--http <URL>` or `--http <HOST:PORT>`
   - `dotnet run --project src/McpMemoryManager.Server -- --http 127.0.0.1:8765`
-  - POST endpoint: `/mcp` (JSON-RPC request/response)
-  - SSE endpoint: `/sse` (keep-alives / future events)
+  - POST JSON-RPC at `/mcp` (also accepts POST at `/` and any path)
+  - SSE keep-alives at `/sse`
 
 - Database location: `--db <PATH>`
-  - Stores the SQLite database at the given path.
-  - Example: `--db C:\\data\\mcp-memory.db`
-  - If omitted, defaults to `memory.db` under the app base directory.
+  - Defaults to `memory.db` under the app base directory
+  - Example: `--db ./data/memory.db`
 
 Examples
 
-- Stdio MCP with custom DB path:
-  - `dotnet run --project src/McpMemoryManager.Server -- --mcp --db ./.local/memory.db`
-
-- TCP on localhost:8765:
-  - `dotnet run --project src/McpMemoryManager.Server -- --tcp 8765`
-
-- WebSocket on 0.0.0.0:8080:
-  - `dotnet run --project src/McpMemoryManager.Server -- --ws 0.0.0.0:8080`
+- Stdio with custom DB: `dotnet run --project src/McpMemoryManager.Server -- --mcp --db ./.local/memory.db`
+- TCP on localhost:8765: `dotnet run --project src/McpMemoryManager.Server -- --tcp 8765`
+- WebSocket on 0.0.0.0:8080: `dotnet run --project src/McpMemoryManager.Server -- --ws 0.0.0.0:8080`
 
 ## Protocol Notes
 
-- Top-level JSON-RPC methods (no `tools/call`):
-  - `initialize`
-  - `tools/list`
-  - `resources/list`
-  - `resources/read`
+- Top-level JSON-RPC methods: `initialize`, `tools/list`, `resources/list`, `resources/read`
+- Tool calls go through `tools/call` with `{ name, arguments }`
+- Stdio/TCP framing: `Content-Length`, `Content-Type`, blank line, then UTF-8 JSON body
+- WebSocket framing: one JSON-RPC message per text frame
 
-- Tools are invoked via `tools/call` with `{ name, arguments }`.
+## Tools Reference
 
-- Stdio/TCP framing (requests and responses):
-  - `Content-Length: <bytes>`
-  - `Content-Type: application/json`
-  - blank line
-  - JSON body (UTF-8)
+- memory.create: Create a memory (`content`, optional `type`, `title`, `agentId`, `ns`, `metadata`, `tags`, `refs`, `importance`, `pin`, `expiresAt`)
+- memory.get: Get a memory by `id`
+- memory.update: Partial update by `id` (any subset of fields)
+- memory.delete: Soft delete by default; set `hard: true` to hard-delete
+- memory.archive / memory.unarchive: Archive toggle
+- memory.pin / memory.unpin: Pin toggle
+- memory.list: Filter by `agentId`, `ns`, `types`, `tags`, `pinned`, `archived`, `before`, `after`, `limit`, `cursor`
+- memory.search: FTS5 search `query` (optional `ns`, `limit`)
+- memory.cleanup: Delete expired memories (`expiresAt` past)
+- memory.tags.add / memory.tags.remove: Manage tag list
+- memory.refs.add / memory.refs.remove: Manage refs list
+- memory.link: Link two memories (`from_id`, `to_id`, optional `relation`)
+- memory.summarize: Create a `summary` referencing a memory
+- memory.summarize_thread: Summarize a set of memories (`source_ids`)
+- memory.merge: Merge `source_ids` into a new note (optional `target_title`, `ns`)
+- export.dump: Export memories to NDJSON (optional `ns`)
+- export.import: Import NDJSON string; returns `upserted` count
+- task.create: Create a task (`title`, optional `ns`)
+- task.update_status: Update task (`id`, `status`, optional `note`)
+- task.add_note: Attach a note to a task (`id`, `note`)
+- task.list: List recent tasks (`limit`)
 
-- WebSocket framing:
-  - One JSON-RPC message per text frame.
+## Data Storage
+
+- Backend: SQLite via `Microsoft.Data.Sqlite` with FTS5 for search
+- File path: default `AppContext.BaseDirectory/memory.db` or override with `--db <PATH>`
+- Tables: `memories` plus FTS virtual table `memories_fts` and mapping `memories_fts_map`
 
 ## MCP Client Config Examples
 
-Most MCP clients support `stdio`, `websocket`, or `http` transports. This server supports all three. Use one of the following:
+- stdio (Windows):
+  - type: `stdio`
+  - command: `dotnet`
+  - args: `["run", "--project", "src/McpMemoryManager.Server", "--", "--mcp"]`
 
-- Stdio (recommended for local):
-  - Start command is launched by the client; example config snippet:
-    - For Windows:
-      - `type`: `"stdio"`
-      - `command`: `"dotnet"`
-      - `args`: `[ "run", "--project", "src/McpMemoryManager.Server", "--", "--mcp" ]`
+- websocket:
+  - Start server: `dotnet run --project src/McpMemoryManager.Server -- --ws 127.0.0.1:8080`
+  - Client URL: `ws://127.0.0.1:8080/ws`
 
-- WebSocket:
-  - Start the server yourself:
-    - `dotnet run --project src/McpMemoryManager.Server -- --ws 127.0.0.1:8080`
-  - Point the client to the WS endpoint:
-    - `type`: `"websocket"`
-    - `url`: `"ws://127.0.0.1:8080/ws"`
+- http:
+  - Start server: `dotnet run --project src/McpMemoryManager.Server -- --http 127.0.0.1:8765`
+  - Client URL: `http://127.0.0.1:8765/mcp`
 
-- HTTP + SSE:
-  - Start the server:
-    - `dotnet run --project src/McpMemoryManager.Server -- --http 127.0.0.1:8765`
-  - Endpoints:
-    - POST `http://127.0.0.1:8765/mcp` — JSON-RPC request/response
-    - GET  `http://127.0.0.1:8765/sse` — Server-Sent Events (keep-alives)
-  - Client config:
-    - `type`: `"http"`
-    - `url`: `"http://127.0.0.1:8765/mcp"`
-
-Note: The `--tcp` option exists for ad‑hoc testing, but many MCP clients do not support raw TCP.
+Note: `--tcp` is useful for ad-hoc testing; many clients don’t support raw TCP.
 
 ## Quick Test
 
-- Create a note via TCP:
+- Create a note via TCP
+  - Start: `dotnet run --project src/McpMemoryManager.Server -- --tcp 127.0.0.1:8765`
+  - Send:
+    - `{ "jsonrpc":"2.0", "id":1, "method":"initialize" }`
+    - `{ "jsonrpc":"2.0", "id":2, "method":"tools/list" }`
+    - `{ "jsonrpc":"2.0", "id":3, "method":"tools/call", "params": { "name":"memory.create", "arguments": { "content":"hello", "ns":"default" } } }`
 
-  1) Start: `dotnet run --project src/McpMemoryManager.Server -- --tcp 127.0.0.1:8765`
-  2) Connect and send frames (example payloads):
-     - `{"jsonrpc":"2.0","id":1,"method":"initialize"}`
-     - `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`
-     - `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory.create","arguments":{"content":"hello","ns":"default"}}}`
+## Project Layout
 
-## Notes
+- src/McpMemoryManager.Server: main server entrypoint (`Program.cs`)
+- src/McpMemoryManager.Server/MemoryStore: SQLite store + schema (`SqliteStore.cs`, `Schema.sql`)
+- src/McpMemoryManager.Server/Tools: MCP tool host and APIs (`ToolHost.cs`, `MemoryApi.cs`, `TaskApi.cs`)
+- tests/McpMemoryManager.Server.Tests: unit tests
 
-- The server exposes tools for memory and task management (create/get/list/search/update/delete, tags/refs, archive/pin, summarize/merge, export/import) and basic resources endpoints for MCP.
-- For WebSocket clients, connect to `/ws`; for stdio/TCP clients use JSON-RPC framing described above.
+## Development
+
+- Build: `dotnet build`
+- Test: `dotnet test`
+- Run with HTTP for local MCP: `dotnet run --project src/McpMemoryManager.Server -- --http 127.0.0.1:8765`
+
